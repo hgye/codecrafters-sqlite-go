@@ -261,30 +261,38 @@ func main() {
 	databaseFilePath := os.Args[1]
 	command := os.Args[2]
 
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: your_program.sh <database_file> <command>")
+		os.Exit(1)
+	}
+	if _, err := os.Stat(databaseFilePath); os.IsNotExist(err) {
+		fmt.Printf("Database file %s does not exist\n", databaseFilePath)
+		os.Exit(1)
+	}
+	// Open the database file
+	databaseFile, err := os.Open(databaseFilePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Read database header
+	dbHeader, err := readDatabaseHeader(databaseFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Read the first page header
+	pageHeader, err := readPageHeader(databaseFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	switch command {
 	case ".dbinfo":
-		databaseFile, err := os.Open(databaseFilePath)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// Read database header
-		dbHeader, err := readDatabaseHeader(databaseFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		// You can use print statements as follows for debugging, they'll be visible when running tests.
-		fmt.Fprintln(os.Stderr, "Logs from your program will appear here!")
-
 		// Uncomment this to pass the first stage
 		fmt.Printf("database page size: %v\n", dbHeader.PageSize)
-
-		// Read the first page header
-		pageHeader, err := readPageHeader(databaseFile)
-		if err != nil {
-			log.Fatal(err)
-		}
 		fmt.Printf("number of tables: %v\n", pageHeader.CellCount)
+
+	case ".tables":
 
 		cellPointerArray, err := readCellPointerArray(databaseFile, pageHeader.CellCount)
 		if err != nil {
