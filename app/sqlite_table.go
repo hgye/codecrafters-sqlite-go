@@ -38,7 +38,7 @@ type SchemaRecord struct {
 	Type     string // "table", "index", "view", "trigger"
 	Name     string // object name
 	TblName  string // table name (for indexes, this is the table they belong to)
-	RootPage int64  // root page number in the database file
+	RootPage uint8  // root page number in the database file (single byte)
 	SQL      string // CREATE statement for this object
 }
 
@@ -62,12 +62,12 @@ const (
 type Table struct {
 	Name      string
 	SchemaSQL string
-	RootPage  int64
+	RootPage  uint8     // root page number in the database file (single byte)
 	db        *SQLiteDB // reference to parent database
 }
 
 // NewTable creates a new Table instance from schema information
-func NewTable(name, schemaSQL string, rootPage int64, db *SQLiteDB) *Table {
+func NewTable(name, schemaSQL string, rootPage uint8, db *SQLiteDB) *Table {
 	return &Table{
 		Name:      name,
 		SchemaSQL: schemaSQL,
@@ -211,11 +211,13 @@ func (rb *RecordBody) ParseAsSchema() *SchemaRecord {
 		// Parse rootpage as integer from bytes
 		rootPageBytes := rb.Values[3].([]byte)
 		if len(rootPageBytes) > 0 {
-			schema.RootPage = int64(rootPageBytes[0]) // Simplified - should handle multi-byte integers
+			schema.RootPage = rootPageBytes[0] // Single byte for root page
+			// log.Printf("DEBUG: RootPage parsed as: %d", schema.RootPage)
 		}
 	}
 	if rb.Values[4] != nil {
 		schema.SQL = string(rb.Values[4].([]byte))
+		// log.Printf("DEBUG: SQL parsed as: %s", schema.SQL)
 	}
 
 	// Set the union field

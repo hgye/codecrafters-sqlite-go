@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	// Available if you need it!
 	// "github.com/xwb1989/sqlparser"
 )
@@ -56,16 +57,38 @@ func runProgram(args []string) error {
 
 	case "sql":
 		// Handle SQL commands passed as arguments
-		fmt.Printf("Processing SQL command with args: %v\n", sqlArgs)
+		fmt.Fprintf(os.Stderr, "Processing SQL command with args: %v\n", sqlArgs)
 
-		// Schema is accessible globally through db.GetSchema()
-		schemaTables := db.GetSchema()
-		fmt.Printf("Schema tables available: %d\n", len(schemaTables))
+		// Join args with spaces and then split properly
+		sqlString := strings.Join(sqlArgs, " ")
 
-		// TODO: Use schemaTables for SQL query processing
-		// For now, just echo the arguments
-		for i, arg := range sqlArgs {
-			fmt.Printf("Arg %d: %s\n", i, arg)
+		// Check and remove trailing semicolon
+		if strings.HasSuffix(sqlString, ";") {
+			sqlString = strings.TrimSuffix(sqlString, ";")
+			fmt.Println("Removed trailing semicolon")
+		}
+
+		// Split back into individual words
+		sqlParts := strings.Fields(sqlString)
+		fmt.Fprintf(os.Stderr, "SQL parts after processing: %v\n", sqlParts)
+
+		// Use schemaTables for SQL query processing
+		table_name := sqlParts[len(sqlParts)-1] // Example: last argument as table name
+		tables := db.GetTables()
+
+		fmt.Fprintf(os.Stderr, "table_name is %s\n", table_name)
+
+		for _, t := range tables {
+			if t.Name == table_name {
+				// fmt.Println(t.RootPage)
+				db.file.Seek(int64(db.header.PageSize*(uint16(t.RootPage-1))), 0)
+				pageHeader, err := db.readPageHeader()
+				if err != nil {
+					return err
+				}
+				fmt.Println(pageHeader.CellCount)
+				break
+			}
 		}
 
 	default:

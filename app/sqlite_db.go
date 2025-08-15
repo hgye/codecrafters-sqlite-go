@@ -8,9 +8,9 @@ import (
 
 // SQLiteDB represents a SQLite database file
 type SQLiteDB struct {
-	file   *os.File
-	header *DatabaseHeader
-	schema []*Cell // Schema table (sqlite_master) content
+	file        *os.File
+	header      *DatabaseHeader
+	schemaTable []*Cell // Schema table (sqlite_master) cell content
 }
 
 // DatabaseHeader represents the 100-byte SQLite database file header
@@ -197,13 +197,13 @@ func (db *SQLiteDB) loadSchema() error {
 	}
 
 	// Read all cells from the schema table
-	db.schema = make([]*Cell, 0, len(cellPointers))
+	db.schemaTable = make([]*Cell, 0, len(cellPointers))
 	for _, pointer := range cellPointers {
 		cell, err := db.readCell(pointer)
 		if err != nil {
 			return err
 		}
-		db.schema = append(db.schema, cell)
+		db.schemaTable = append(db.schemaTable, cell)
 	}
 
 	return nil
@@ -211,7 +211,7 @@ func (db *SQLiteDB) loadSchema() error {
 
 // GetSchema returns the schema table content
 func (db *SQLiteDB) GetSchema() []*Cell {
-	return db.schema
+	return db.schemaTable
 }
 
 // GetTableNames returns a list of table names from the schema
@@ -219,7 +219,7 @@ func (db *SQLiteDB) GetTableNames() []string {
 	var tables []string
 	tables = append(tables, "sqlite_master") // First table is always the schema table
 
-	for _, cell := range db.schema {
+	for _, cell := range db.schemaTable {
 		schema := cell.Record.RecordBody.ParseAsSchema()
 		if schema != nil && schema.Type == "table" && schema.Name != "sqlite_master" {
 			tables = append(tables, schema.Name)
@@ -233,7 +233,7 @@ func (db *SQLiteDB) GetTableNames() []string {
 func (db *SQLiteDB) GetTables() []*Table {
 	var tables []*Table
 
-	for _, cell := range db.schema {
+	for _, cell := range db.schemaTable {
 		schema := cell.Record.RecordBody.ParseAsSchema()
 		if schema != nil && schema.Type == "table" {
 			table := NewTableFromSchemaCell(cell, db)
@@ -253,7 +253,7 @@ func (db *SQLiteDB) GetTableCount() int {
 	}
 	// Note: This returns the cell count from the first page, which includes all schema objects
 	// For actual table count, you'd need to filter the schema
-	return len(db.schema)
+	return len(db.schemaTable)
 }
 
 // Offset returns the uint16 offset value
@@ -270,7 +270,7 @@ func (cp CellPointer) IsValid() bool {
 func (db *SQLiteDB) GetSchemaObjects() []*SchemaRecord {
 	var objects []*SchemaRecord
 
-	for _, cell := range db.schema {
+	for _, cell := range db.schemaTable {
 		schema := cell.Record.RecordBody.ParseAsSchema()
 		if schema != nil {
 			objects = append(objects, schema)

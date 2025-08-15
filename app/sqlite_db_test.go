@@ -105,7 +105,7 @@ func (m *MockSQLiteDB) GetSchema() []*Cell {
 	return m.schema
 }
 
-func createMockSchemaCell(objType, name, tblName, sql string, rootPage int64) *Cell {
+func createMockSchemaCell(objType, name, tblName, sql string, rootPage uint8) *Cell {
 	return &Cell{
 		Record: Record{
 			RecordBody: RecordBody{
@@ -113,7 +113,7 @@ func createMockSchemaCell(objType, name, tblName, sql string, rootPage int64) *C
 					[]byte(objType),
 					[]byte(name),
 					[]byte(tblName),
-					[]byte{byte(rootPage)},
+					[]byte{rootPage},
 					[]byte(sql),
 				},
 			},
@@ -124,7 +124,7 @@ func createMockSchemaCell(objType, name, tblName, sql string, rootPage int64) *C
 func TestGetTableNamesLogic(t *testing.T) {
 	// Create mock database with known schema
 	mockDB := &SQLiteDB{
-		schema: []*Cell{
+		schemaTable: []*Cell{
 			createMockSchemaCell("table", "users", "users", "CREATE TABLE users(id INTEGER, name TEXT)", 2),
 			createMockSchemaCell("table", "posts", "posts", "CREATE TABLE posts(id INTEGER, title TEXT)", 3),
 			createMockSchemaCell("index", "idx_users_name", "users", "CREATE INDEX idx_users_name ON users(name)", 4),
@@ -143,7 +143,7 @@ func TestGetTableNamesLogic(t *testing.T) {
 func TestGetTablesLogic(t *testing.T) {
 	// Create mock database with known schema
 	mockDB := &SQLiteDB{
-		schema: []*Cell{
+		schemaTable: []*Cell{
 			createMockSchemaCell("table", "users", "users", "CREATE TABLE users(id INTEGER, name TEXT)", 2),
 			createMockSchemaCell("index", "idx_users_name", "users", "CREATE INDEX idx_users_name ON users(name)", 4),
 			createMockSchemaCell("table", "posts", "posts", "CREATE TABLE posts(id INTEGER, title TEXT)", 3),
@@ -182,7 +182,7 @@ func TestGetTablesLogic(t *testing.T) {
 func TestGetSchemaObjectsLogic(t *testing.T) {
 	// Create mock database with known schema
 	mockDB := &SQLiteDB{
-		schema: []*Cell{
+		schemaTable: []*Cell{
 			createMockSchemaCell("table", "users", "users", "CREATE TABLE users(id INTEGER, name TEXT)", 2),
 			createMockSchemaCell("index", "idx_users_name", "users", "CREATE INDEX idx_users_name ON users(name)", 4),
 			createMockSchemaCell("view", "user_view", "user_view", "CREATE VIEW user_view AS SELECT * FROM users", 0),
