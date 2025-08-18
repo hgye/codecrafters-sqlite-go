@@ -8,9 +8,10 @@ import (
 
 // SQLiteDB represents a SQLite database file
 type SQLiteDB struct {
-	file        *os.File
-	header      *DatabaseHeader
-	schemaTable []*Cell // Schema table (sqlite_master) cell content
+	file          *os.File
+	header        *DatabaseHeader
+	schemaTable   []*Cell         // Schema table (sqlite_master) cell content
+	schemaRecords []*SchemaRecord // Cached parsed schema records
 }
 
 // DatabaseHeader represents the 100-byte SQLite database file header
@@ -198,12 +199,18 @@ func (db *SQLiteDB) loadSchema() error {
 
 	// Read all cells from the schema table
 	db.schemaTable = make([]*Cell, 0, len(cellPointers))
+	db.schemaRecords = make([]*SchemaRecord, 0, len(cellPointers))
+
 	for _, pointer := range cellPointers {
 		cell, err := db.readCell(pointer)
 		if err != nil {
 			return err
 		}
 		db.schemaTable = append(db.schemaTable, cell)
+
+		// Parse and cache the schema record
+		schema := cell.Record.RecordBody.ParseAsSchema()
+		db.schemaRecords = append(db.schemaRecords, schema)
 	}
 
 	return nil
@@ -219,8 +226,7 @@ func (db *SQLiteDB) GetTableNames() []string {
 	var tables []string
 	tables = append(tables, "sqlite_master") // First table is always the schema table
 
-	for _, cell := range db.schemaTable {
-		schema := cell.Record.RecordBody.ParseAsSchema()
+	for _, schema := range db.schemaRecords {
 		if schema != nil && schema.Type == "table" && schema.Name != "sqlite_master" {
 			tables = append(tables, schema.Name)
 		}
@@ -233,10 +239,9 @@ func (db *SQLiteDB) GetTableNames() []string {
 func (db *SQLiteDB) GetTables() []*Table {
 	var tables []*Table
 
-	for _, cell := range db.schemaTable {
-		schema := cell.Record.RecordBody.ParseAsSchema()
+	for i, schema := range db.schemaRecords {
 		if schema != nil && schema.Type == "table" {
-			table := NewTableFromSchemaCell(cell, db)
+			table := NewTableFromSchemaCell(db.schemaTable[i], db)
 			if table != nil {
 				tables = append(tables, table)
 			}
@@ -244,6 +249,16 @@ func (db *SQLiteDB) GetTables() []*Table {
 	}
 
 	return tables
+}
+
+// GetTable returns a specific table by name, or nil if not found
+func (db *SQLiteDB) GetTable(tableName string) *Table {
+	for i, schema := range db.schemaRecords {
+		if schema != nil && schema.Type == "table" && schema.Name == tableName {
+			return NewTableFromSchemaCell(db.schemaTable[i], db)
+		}
+	}
+	return nil
 }
 
 // GetTableCount returns the number of tables in the database
@@ -270,8 +285,7 @@ func (cp CellPointer) IsValid() bool {
 func (db *SQLiteDB) GetSchemaObjects() []*SchemaRecord {
 	var objects []*SchemaRecord
 
-	for _, cell := range db.schemaTable {
-		schema := cell.Record.RecordBody.ParseAsSchema()
+	for _, schema := range db.schemaRecords {
 		if schema != nil {
 			objects = append(objects, schema)
 		}

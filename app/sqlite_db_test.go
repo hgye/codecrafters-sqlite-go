@@ -121,6 +121,14 @@ func createMockSchemaCell(objType, name, tblName, sql string, rootPage uint8) *C
 	}
 }
 
+// populateSchemaCache populates the schemaRecords cache from schemaTable for testing
+func populateSchemaCache(db *SQLiteDB) {
+	db.schemaRecords = make([]*SchemaRecord, len(db.schemaTable))
+	for i, cell := range db.schemaTable {
+		db.schemaRecords[i] = cell.Record.RecordBody.ParseAsSchema()
+	}
+}
+
 func TestGetTableNamesLogic(t *testing.T) {
 	// Create mock database with known schema
 	mockDB := &SQLiteDB{
@@ -131,6 +139,9 @@ func TestGetTableNamesLogic(t *testing.T) {
 			createMockSchemaCell("view", "user_posts", "user_posts", "CREATE VIEW user_posts AS SELECT * FROM users JOIN posts", 0),
 		},
 	}
+
+	// Populate the schema cache
+	populateSchemaCache(mockDB)
 
 	tableNames := mockDB.GetTableNames()
 	expected := []string{"sqlite_master", "users", "posts"}
@@ -150,10 +161,14 @@ func TestGetTablesLogic(t *testing.T) {
 		},
 	}
 
+	// Populate the schema cache
+	populateSchemaCache(mockDB)
+
 	tables := mockDB.GetTables()
 
 	if len(tables) != 2 {
 		t.Errorf("GetTables() returned %d tables, want 2", len(tables))
+		return // Early return to avoid index panic
 	}
 
 	// Check table names
@@ -189,6 +204,9 @@ func TestGetSchemaObjectsLogic(t *testing.T) {
 			createMockSchemaCell("trigger", "user_trigger", "users", "CREATE TRIGGER user_trigger AFTER INSERT ON users BEGIN END", 0),
 		},
 	}
+
+	// Populate the schema cache
+	populateSchemaCache(mockDB)
 
 	objects := mockDB.GetSchemaObjects()
 

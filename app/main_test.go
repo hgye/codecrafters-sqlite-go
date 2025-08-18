@@ -30,9 +30,14 @@ func TestMainFunctionality(t *testing.T) {
 			contains: []string{"sqlite_master"},
 		},
 		{
+			name:     "sql select count(*)",
+			args:     []string{"test", dbPath, "SELECT", "COUNT(*)", "FROM", "oranges"},
+			contains: []string{"6"}, // Assuming there are 6 rows in the oranges table
+		},
+		{
 			name:     "sql command",
-			args:     []string{"test", dbPath, "SELECT", "name", "FROM", "sqlite_master"},
-			contains: []string{"Processing SQL command with args:", "Schema tables available:"},
+			args:     []string{"test", dbPath, "SELECT", "name", "FROM", "apples"},
+			contains: []string{"Granny Smith", "Fuji", "Honeycrisp", "Golden Delicious"},
 		},
 	}
 
