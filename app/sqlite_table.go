@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 )
 
@@ -240,11 +241,165 @@ func (rb *RecordBody) IsSchemaRecord() bool {
 	return false
 }
 
+// ReadColumn reads and prints data from a specific column in the table
+func (t *Table) ReadColumn(columnIndex int) error {
+	// Calculate the page offset using (rootpage-1) * pagesize
+	pageOffset := int64((t.RootPage - 1)) * int64(t.db.header.PageSize)
+
+	// Seek to the table's root page
+	_, err := t.db.file.Seek(pageOffset, 0)
+	if err != nil {
+		return fmt.Errorf("failed to seek to table page: %w", err)
+	}
+
+	// Read the page header
+	pageHeader, err := t.db.readPageHeader()
+	if err != nil {
+		return fmt.Errorf("failed to read page header: %w", err)
+	}
+
+	// Check if this is a table B-tree leaf page (type 0x0d)
+	if pageHeader.PageType != 0x0d {
+		return fmt.Errorf("expected table B-tree leaf page (0x0d), got 0x%02X", pageHeader.PageType)
+	}
+
+	// Read cell pointers (these are relative offsets within the page)
+	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount)
+	if err != nil {
+		return fmt.Errorf("failed to read cell pointers: %w", err)
+	}
+
+	// Read all cells and extract the specified column data
+	for _, cellPointer := range cellPointers {
+		// Calculate absolute offset: page start + cell pointer
+		cellAbsoluteOffset := pageOffset + int64(cellPointer)
+
+		// Seek to the absolute cell position
+		_, err := t.db.file.Seek(cellAbsoluteOffset, 0)
+		if err != nil {
+			continue
+		}
+
+		// Read table B-tree leaf cell manually (different format than schema cells)
+		cell, err := t.readTableCell()
+		if err != nil {
+			continue
+		}
+
+		// Extract the value from the specified column
+		if len(cell.Record.RecordBody.Values) > columnIndex {
+			value := cell.Record.RecordBody.Values[columnIndex]
+			if value != nil {
+				// Print the actual column value
+				switch v := value.(type) {
+				case []byte:
+					fmt.Println(string(v))
+				case string:
+					fmt.Println(v)
+				case int64:
+					fmt.Println(v)
+				case float64:
+					fmt.Println(v)
+				default:
+					fmt.Printf("%v\n", v)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// readTableCell reads a table B-tree leaf cell (type 0x0d) from the current file position
+func (t *Table) readTableCell() (*Cell, error) {
+	var cell Cell
+
+	// Read payload size and rowid varints from file
+	payloadData := make([]byte, 64) // Read enough bytes to parse varints
+	if _, err := t.db.file.Read(payloadData); err != nil {
+		return nil, err
+	}
+
+	var bytesRead int
+	cell.PayloadSize, bytesRead = readVarint(payloadData, 0)
+	var rowidBytesRead int
+	cell.Rowid, rowidBytesRead = readVarint(payloadData, bytesRead)
+	totalVarintBytes := bytesRead + rowidBytesRead
+
+	// Seek back to the start of payload data (after varints)
+	currentPos, _ := t.db.file.Seek(0, 1) // Get current position
+	payloadStart := currentPos - int64(len(payloadData)) + int64(totalVarintBytes)
+	if _, err := t.db.file.Seek(payloadStart, 0); err != nil {
+		return nil, err
+	}
+
+	// Read the actual payload data
+	payloadSize := int(cell.PayloadSize)
+	payload := make([]byte, payloadSize)
+	if _, err := t.db.file.Read(payload); err != nil {
+		return nil, err
+	}
+
+	// Parse record from payload
+	var record Record
+	var headerOffset int
+	record.RecordHeader, headerOffset = readRecordHeader(payload, 0)
+	record.RecordBody, _ = readRecordBody(payload, headerOffset, record.RecordHeader)
+	cell.Record = record
+
+	return &cell, nil
+}
+
 // GetAllRows returns all rows from this table
 func (t *Table) GetAllRows() ([]*Cell, error) {
-	// TODO: Implement table row reading by navigating to the table's root page
-	// For now, return empty slice as this would require page navigation
-	return []*Cell{}, nil
+	// Calculate the page offset using (rootpage-1) * pagesize
+	pageOffset := int64((t.RootPage - 1)) * int64(t.db.header.PageSize)
+
+	// Seek to the table's root page
+	_, err := t.db.file.Seek(pageOffset, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to seek to table page: %w", err)
+	}
+
+	// Read the page header
+	pageHeader, err := t.db.readPageHeader()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read page header: %w", err)
+	}
+
+	// Check if this is a table B-tree leaf page (type 0x0d)
+	if pageHeader.PageType != 0x0d {
+		return nil, fmt.Errorf("expected table B-tree leaf page (0x0d), got 0x%02X", pageHeader.PageType)
+	}
+
+	// Read cell pointers
+	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read cell pointers: %w", err)
+	}
+
+	// Read all cells
+	var cells []*Cell
+	for _, cellPointer := range cellPointers {
+		// Calculate absolute offset: page start + cell pointer
+		cellAbsoluteOffset := pageOffset + int64(cellPointer)
+
+		// Seek to the absolute cell position
+		_, err := t.db.file.Seek(cellAbsoluteOffset, 0)
+		if err != nil {
+			continue
+		}
+
+		// Read table B-tree leaf cell
+		cell, err := t.readTableCell()
+		if err != nil {
+			continue
+		}
+
+		cells = append(cells, cell)
+	}
+
+	return cells, nil
 }
 
 // GetRowCount returns the number of rows in this table
