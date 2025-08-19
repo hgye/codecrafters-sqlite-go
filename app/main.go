@@ -121,7 +121,9 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 		return nil
 	}
 
+	// Process each expression in the SELECT clause
 	for _, expr := range selectExprs {
+		fmt.Fprintf(os.Stderr, "Processing expression of type: %T\n", expr)
 		switch selectExpr := expr.(type) {
 		case *sqlparser.StarExpr:
 			// Handle SELECT *
@@ -130,6 +132,7 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 
 		case *sqlparser.AliasedExpr:
 			// Check if it's a function call like COUNT(*) or a regular column
+			fmt.Fprintf(os.Stderr, "Processing AliasedExpr with inner type: %T\n", selectExpr.Expr)
 			switch innerExpr := selectExpr.Expr.(type) {
 			case *sqlparser.FuncExpr:
 				funcName := innerExpr.Name.String()
@@ -147,8 +150,15 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 				// Handle regular column name
 				columnName := innerExpr.Name.String()
 				fmt.Fprintf(os.Stderr, "Found column name: %s\n", columnName)
-				fmt.Printf("%s\n", columnName)
-				handleColumn(tableName, columnName, db)
+
+				// Call handleSelectColumn to validate and get column info
+				// fmt.Fprintf(os.Stderr, "Calling handleSelectColumn for table: %s, column: %s\n", tableName, columnName)
+				err := handleSelectColumn(tableName, columnName, db)
+				if err != nil {
+					// fmt.Fprintf(os.Stderr, "Error in handleSelectColumn: %v\n", err)
+					return err
+				}
+				// fmt.Fprintf(os.Stderr, "handleSelectColumn completed successfully\n")
 
 			default:
 				fmt.Fprintf(os.Stderr, "Unknown expression type in AliasedExpr: %T\n", innerExpr)
@@ -160,7 +170,9 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 	}
 
 	return nil
-} // handleCountFunction processes COUNT(*) functions
+}
+
+// handleCountFunction processes COUNT(*) functions
 func handleCountFunction(tableName string, db *SQLiteDB) error {
 	table := db.GetTable(tableName)
 	if table == nil {
@@ -176,9 +188,182 @@ func handleCountFunction(tableName string, db *SQLiteDB) error {
 	return nil
 }
 
-// handleColumn
-func handleColumn(tableName string, colName string, db *SQLiteDB) error {
+// handleSelectColumn
+func handleSelectColumn(tableName string, colName string, db *SQLiteDB) error {
+	table := db.GetTable(tableName)
+	if table == nil {
+		return fmt.Errorf("table %s not found", tableName)
+	}
+
+	fmt.Fprintf(os.Stderr, "Schema SQL: %s\n", table.SchemaSQL)
+
+	// Normalize SQLite syntax to MySQL syntax for sqlparser
+	normalizedSQL := normalizeSQLiteToMySQL(table.SchemaSQL)
+	fmt.Fprintf(os.Stderr, "Normalized SQL: %s\n", normalizedSQL)
+
+	// Try to parse with sqlparser
+	stmt, err := sqlparser.Parse(normalizedSQL)
+	if err != nil {
+		return fmt.Errorf("sqlparser failed even after normalization: %v", err)
+	}
+
+	switch parsedStmt := stmt.(type) {
+	case *sqlparser.DDL:
+		if parsedStmt.Action != "create" || parsedStmt.TableSpec == nil {
+			return fmt.Errorf("unexpected DDL statement: action=%s", parsedStmt.Action)
+		}
+
+		fmt.Fprintf(os.Stderr, "Found CREATE TABLE statement (via sqlparser) for table: %s\n", tableName)
+		fmt.Fprintf(os.Stderr, "Columns in table:\n")
+
+		// Look through the columns in the TableSpec to find the column index
+		columnIndex := -1
+		for i, col := range parsedStmt.TableSpec.Columns {
+			columnName := col.Name.String()
+			columnType := col.Type.Type
+			fmt.Fprintf(os.Stderr, "  - %s (%s)\n", columnName, columnType)
+
+			if strings.EqualFold(columnName, colName) {
+				columnIndex = i
+				fmt.Fprintf(os.Stderr, "Found target column %s at index %d\n", columnName, i)
+				break
+			}
+		}
+
+		if columnIndex == -1 {
+			return fmt.Errorf("column %s not found in table %s", colName, tableName)
+		}
+
+		// Now retrieve actual data from the table using proper table B-tree reading
+		return readTableData(table, columnIndex, db)
+
+	default:
+		return fmt.Errorf("unsupported schema SQL statement type: %T", parsedStmt)
+	}
+}
+
+// retrieveColumnData retrieves and prints data from a specific column in a table
+func readTableData(table *Table, columnIndex int, db *SQLiteDB) error {
+	// Calculate the page offset using (rootpage-1) * pagesize
+	pageOffset := int64((table.RootPage - 1)) * int64(db.header.PageSize)
+	fmt.Fprintf(os.Stderr, "Table %s: RootPage=%d, PageSize=%d, Offset=%d\n",
+		table.Name, table.RootPage, db.header.PageSize, pageOffset)
+
+	// Seek to the table's root page
+	_, err := db.file.Seek(pageOffset, 0)
+	if err != nil {
+		return fmt.Errorf("failed to seek to table page: %w", err)
+	}
+
+	// Read the page header
+	pageHeader, err := db.readPageHeader()
+	if err != nil {
+		return fmt.Errorf("failed to read page header: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Page type: 0x%02X, CellCount: %d, CellContentStart: %d\n",
+		pageHeader.PageType, pageHeader.CellCount, pageHeader.CellContentStart)
+
+	// Check if this is a table B-tree leaf page (type 0x0d)
+	if pageHeader.PageType != 0x0d {
+		return fmt.Errorf("expected table B-tree leaf page (0x0d), got 0x%02X", pageHeader.PageType)
+	}
+
+	// Read cell pointers (these are relative offsets within the page)
+	cellPointers, err := db.readCellPointerArray(pageHeader.CellCount)
+	if err != nil {
+		return fmt.Errorf("failed to read cell pointers: %w", err)
+	}
+
+	// Read all cells and extract the specified column data
+	for i, cellPointer := range cellPointers {
+		// Calculate absolute offset: page start + cell pointer
+		cellAbsoluteOffset := pageOffset + int64(cellPointer)
+		fmt.Fprintf(os.Stderr, "Cell %d: pointer=0x%04X (%d), absolute offset=%d\n",
+			i, uint16(cellPointer), uint16(cellPointer), cellAbsoluteOffset)
+
+		// Seek to the absolute cell position
+		_, err := db.file.Seek(cellAbsoluteOffset, 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error seeking to cell %d: %v\n", i, err)
+			continue
+		}
+
+		// Read table B-tree leaf cell manually (different format than schema cells)
+		cell, err := readTableCell(db.file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading table cell %d: %v\n", i, err)
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "Cell %d: PayloadSize=%d, Rowid=%d, Values=%d\n",
+			i, cell.PayloadSize, cell.Rowid, len(cell.Record.RecordBody.Values))
+
+		// Extract the value from the specified column
+		if len(cell.Record.RecordBody.Values) > columnIndex {
+			value := cell.Record.RecordBody.Values[columnIndex]
+			if value != nil {
+				// Print the actual column value
+				switch v := value.(type) {
+				case []byte:
+					fmt.Println(string(v))
+				case string:
+					fmt.Println(v)
+				case int64:
+					fmt.Println(v)
+				case float64:
+					fmt.Println(v)
+				default:
+					fmt.Printf("%v\n", v)
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Cell %d: not enough values (has %d, need %d)\n",
+				i, len(cell.Record.RecordBody.Values), columnIndex+1)
+		}
+	}
+
 	return nil
+}
+
+// readTableCell reads a table B-tree leaf cell (type 0x0d) from the current file position
+func readTableCell(file *os.File) (*Cell, error) {
+	var cell Cell
+
+	// Read payload size and rowid varints from file
+	payloadData := make([]byte, 64) // Read enough bytes to parse varints
+	if _, err := file.Read(payloadData); err != nil {
+		return nil, err
+	}
+
+	var bytesRead int
+	cell.PayloadSize, bytesRead = readVarint(payloadData, 0)
+	var rowidBytesRead int
+	cell.Rowid, rowidBytesRead = readVarint(payloadData, bytesRead)
+	totalVarintBytes := bytesRead + rowidBytesRead
+
+	// Seek back to the start of payload data (after varints)
+	currentPos, _ := file.Seek(0, 1) // Get current position
+	payloadStart := currentPos - int64(len(payloadData)) + int64(totalVarintBytes)
+	if _, err := file.Seek(payloadStart, 0); err != nil {
+		return nil, err
+	}
+
+	// Read the actual payload data
+	payloadSize := int(cell.PayloadSize)
+	payload := make([]byte, payloadSize)
+	if _, err := file.Read(payload); err != nil {
+		return nil, err
+	}
+
+	// Parse record from payload
+	var record Record
+	var headerOffset int
+	record.RecordHeader, headerOffset = readRecordHeader(payload, 0)
+	record.RecordBody, _ = readRecordBody(payload, headerOffset, record.RecordHeader)
+	cell.Record = record
+
+	return &cell, nil
 }
 
 // extractTableName extracts the table name from a SELECT statement
@@ -203,4 +388,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// normalizeSQLiteToMySQL converts SQLite-specific syntax to MySQL syntax for sqlparser
+func normalizeSQLiteToMySQL(sql string) string {
+	// Fix MySQL syntax: "primary key autoincrement" should be "AUTO_INCREMENT PRIMARY KEY"
+	// or just "AUTO_INCREMENT" (as AUTO_INCREMENT implies PRIMARY KEY in MySQL)
+	normalized := strings.ReplaceAll(sql, "primary key autoincrement", "AUTO_INCREMENT PRIMARY KEY")
+	normalized = strings.ReplaceAll(normalized, "PRIMARY KEY AUTOINCREMENT", "AUTO_INCREMENT PRIMARY KEY")
+
+	return normalized
 }
