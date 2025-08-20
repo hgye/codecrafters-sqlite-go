@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 )
 
 // Cell represents a B-tree cell (varies by page type)
@@ -170,7 +169,7 @@ func readRecordHeader(data []byte, offset int) (RecordHeader, int) {
 }
 
 // readRecordBody reads and parses a record body from payload data
-func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, int) {
+func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, int, error) {
 	var body RecordBody
 	body.Values = make([]interface{}, len(header.SerialTypes))
 
@@ -181,13 +180,13 @@ func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, i
 			continue
 		}
 		if offset+size > len(data) {
-			log.Fatal("Not enough data for record body")
+			return body, offset, fmt.Errorf("not enough data for record body: need %d bytes, have %d", offset+size, len(data))
 		}
 		value := data[offset : offset+size]
 		body.Values[i] = value // Store raw bytes for now
 		offset += size
 	}
-	return body, offset
+	return body, offset, nil
 }
 
 // ParseAsSchema parses the record body as a schema table record
@@ -243,67 +242,16 @@ func (rb *RecordBody) IsSchemaRecord() bool {
 
 // ReadColumn reads and prints data from a specific column in the table
 func (t *Table) ReadColumn(columnIndex int) error {
-	// Calculate the page offset using (rootpage-1) * pagesize
-	pageOffset := int64((t.RootPage - 1)) * int64(t.db.header.PageSize)
-
-	// Seek to the table's root page
-	_, err := t.db.file.Seek(pageOffset, 0)
+	cells, err := t.GetAllRows()
 	if err != nil {
-		return fmt.Errorf("failed to seek to table page: %w", err)
+		return err
 	}
 
-	// Read the page header
-	pageHeader, err := t.db.readPageHeader()
-	if err != nil {
-		return fmt.Errorf("failed to read page header: %w", err)
-	}
-
-	// Check if this is a table B-tree leaf page (type 0x0d)
-	if pageHeader.PageType != 0x0d {
-		return fmt.Errorf("expected table B-tree leaf page (0x0d), got 0x%02X", pageHeader.PageType)
-	}
-
-	// Read cell pointers (these are relative offsets within the page)
-	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount, pageOffset)
-	if err != nil {
-		return fmt.Errorf("failed to read cell pointers: %w", err)
-	}
-
-	// Read all cells and extract the specified column data
-	for _, cellPointer := range cellPointers {
-		// Calculate absolute offset: page start + cell pointer
-		cellAbsoluteOffset := pageOffset + int64(cellPointer)
-		// fmt.Printf("DEBUG: Reading cell at absolute offset: 0x%x\n", cellAbsoluteOffset)
-
-		// Seek to the absolute cell position
-		_, err := t.db.file.Seek(cellAbsoluteOffset, 0)
-		if err != nil {
-			continue
-		}
-
-		// Read table B-tree leaf cell manually (different format than schema cells)
-		cell, err := t.readTableCell()
-		if err != nil {
-			continue
-		}
-
-		// Extract the value from the specified column
+	for _, cell := range cells {
 		if len(cell.Record.RecordBody.Values) > columnIndex {
 			value := cell.Record.RecordBody.Values[columnIndex]
 			if value != nil {
-				// Print the actual column value
-				switch v := value.(type) {
-				case []byte:
-					fmt.Println(string(v))
-				case string:
-					fmt.Println(v)
-				case int64:
-					fmt.Println(v)
-				case float64:
-					fmt.Println(v)
-				default:
-					fmt.Printf("%v\n", v)
-				}
+				t.printValue(value)
 			}
 		}
 	}
@@ -311,19 +259,35 @@ func (t *Table) ReadColumn(columnIndex int) error {
 	return nil
 }
 
+// printValue prints a value with proper type formatting
+func (t *Table) printValue(value interface{}) {
+	switch v := value.(type) {
+	case []byte:
+		fmt.Println(string(v))
+	case string:
+		fmt.Println(v)
+	case int64:
+		fmt.Println(v)
+	case float64:
+		fmt.Println(v)
+	default:
+		fmt.Printf("%v\n", v)
+	}
+}
+
 // readTableCell reads a table B-tree leaf cell (type 0x0d) from the current file position
 func (t *Table) readTableCell() (*Cell, error) {
 	var cell Cell
 
 	// Remember the starting position
-	cellStart, err := t.db.file.Seek(0, 1)
+	cellStart, err := t.db.Seek(0, 1)
 	if err != nil {
 		return nil, err
 	}
 
 	// Read payload size and rowid varints from file
 	payloadData := make([]byte, 64) // Read enough bytes to parse varints
-	if _, err := t.db.file.Read(payloadData); err != nil {
+	if _, err = t.db.Read(payloadData); err != nil {
 		return nil, err
 	}
 
@@ -335,14 +299,14 @@ func (t *Table) readTableCell() (*Cell, error) {
 
 	// Calculate payload start directly from cell start
 	payloadStart := cellStart + int64(totalVarintBytes)
-	if _, err := t.db.file.Seek(payloadStart, 0); err != nil {
+	if _, err = t.db.Seek(payloadStart, 0); err != nil {
 		return nil, err
 	}
 
 	// Read the actual payload data
 	payloadSize := int(cell.PayloadSize)
 	payload := make([]byte, payloadSize)
-	if _, err := t.db.file.Read(payload); err != nil {
+	if _, err = t.db.Read(payload); err != nil {
 		return nil, err
 	}
 
@@ -350,7 +314,10 @@ func (t *Table) readTableCell() (*Cell, error) {
 	var record Record
 	var headerOffset int
 	record.RecordHeader, headerOffset = readRecordHeader(payload, 0)
-	record.RecordBody, _ = readRecordBody(payload, headerOffset, record.RecordHeader)
+	record.RecordBody, _, err = readRecordBody(payload, headerOffset, record.RecordHeader)
+	if err != nil {
+		return nil, err
+	}
 	cell.Record = record
 
 	return &cell, nil
@@ -362,7 +329,7 @@ func (t *Table) GetAllRows() ([]*Cell, error) {
 	pageOffset := int64((t.RootPage - 1)) * int64(t.db.header.PageSize)
 
 	// Seek to the table's root page
-	_, err := t.db.file.Seek(pageOffset, 0)
+	_, err := t.db.Seek(pageOffset, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to seek to table page: %w", err)
 	}
@@ -391,7 +358,7 @@ func (t *Table) GetAllRows() ([]*Cell, error) {
 		cellAbsoluteOffset := pageOffset + int64(cellPointer)
 
 		// Seek to the absolute cell position
-		_, err := t.db.file.Seek(cellAbsoluteOffset, 0)
+		_, err := t.db.Seek(cellAbsoluteOffset, 0)
 		if err != nil {
 			continue
 		}

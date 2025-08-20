@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 )
 
@@ -58,7 +57,9 @@ type CellPointer uint16
 func NewSQLiteDB(filePath string) (*SQLiteDB, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database file: %w", err)
+		return nil, NewDatabaseError("open_database_file", err, map[string]interface{}{
+			"file_path": filePath,
+		})
 	}
 
 	db := &SQLiteDB{
@@ -68,13 +69,13 @@ func NewSQLiteDB(filePath string) (*SQLiteDB, error) {
 	// Parse the database header
 	if err := db.parseHeader(); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("failed to parse database header: %w", err)
+		return nil, NewDatabaseError("parse_database_header", err, nil)
 	}
 
 	// Load the schema table (sqlite_master)
 	if err := db.loadSchema(); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("failed to load schema: %w", err)
+		return nil, NewDatabaseError("load_schema", err, nil)
 	}
 
 	return db, nil
@@ -88,14 +89,34 @@ func (db *SQLiteDB) Close() error {
 	return nil
 }
 
+// Read implements io.Reader
+func (db *SQLiteDB) Read(p []byte) (n int, err error) {
+	return db.file.Read(p)
+}
+
+// ReadAt implements io.ReaderAt
+func (db *SQLiteDB) ReadAt(p []byte, off int64) (n int, err error) {
+	return db.file.ReadAt(p, off)
+}
+
+// Seek implements io.Seeker
+func (db *SQLiteDB) Seek(offset int64, whence int) (int64, error) {
+	return db.file.Seek(offset, whence)
+}
+
+// GetFile returns the underlying file for backward compatibility
+func (db *SQLiteDB) GetFile() *os.File {
+	return db.file
+}
+
 // parseHeader reads and parses the 100-byte database header
 func (db *SQLiteDB) parseHeader() error {
-	if _, err := db.file.Seek(0, 0); err != nil {
+	if _, err := db.Seek(0, 0); err != nil {
 		return err
 	}
 
 	var header DatabaseHeader
-	if err := binary.Read(db.file, binary.BigEndian, &header); err != nil {
+	if err := binary.Read(db, binary.BigEndian, &header); err != nil {
 		return err
 	}
 
@@ -116,7 +137,7 @@ func (db *SQLiteDB) GetPageSize() uint16 {
 // readPageHeader reads a B-tree page header from the current file position
 func (db *SQLiteDB) readPageHeader() (*PageHeader, error) {
 	var pageHeader PageHeader
-	if err := binary.Read(db.file, binary.BigEndian, &pageHeader); err != nil {
+	if err := binary.Read(db, binary.BigEndian, &pageHeader); err != nil {
 		return nil, err
 	}
 	return &pageHeader, nil
@@ -129,8 +150,11 @@ func (db *SQLiteDB) readCellPointerArray(cellCount uint16, pageOffset int64) ([]
 	// We include pageOffset parameter for explicit documentation of where we're reading from
 
 	cellPointers := make([]uint16, cellCount)
-	if err := binary.Read(db.file, binary.BigEndian, &cellPointers); err != nil {
-		return nil, fmt.Errorf("failed to read cell pointer array at page offset %d: %w", pageOffset, err)
+	if err := binary.Read(db, binary.BigEndian, &cellPointers); err != nil {
+		return nil, NewDatabaseError("read_cell_pointer_array", err, map[string]interface{}{
+			"page_offset": pageOffset,
+			"cell_count":  cellCount,
+		})
 	}
 
 	// Convert []uint16 to []CellPointer and validate
@@ -139,7 +163,11 @@ func (db *SQLiteDB) readCellPointerArray(cellCount uint16, pageOffset int64) ([]
 		result[i] = CellPointer(pointer)
 		// Validate that cell pointer is within reasonable range (not zero, within page bounds)
 		if pointer == 0 || pointer > uint16(db.header.PageSize) {
-			return nil, fmt.Errorf("invalid cell pointer %d at index %d: value %d", i, i, pointer)
+			return nil, NewDatabaseError("validate_cell_pointer", ErrInvalidCellPointer, map[string]interface{}{
+				"pointer_index": i,
+				"pointer_value": pointer,
+				"page_size":     db.header.PageSize,
+			})
 		}
 	}
 	return result, nil
@@ -148,16 +176,18 @@ func (db *SQLiteDB) readCellPointerArray(cellCount uint16, pageOffset int64) ([]
 // readCell reads a cell from the specified cell pointer
 func (db *SQLiteDB) readCell(cellPointer CellPointer) (*Cell, error) {
 	offset := cellPointer.Offset()
-	if _, err := db.file.Seek(int64(offset), 0); err != nil {
-		return nil, err
+	if _, err := db.Seek(int64(offset), 0); err != nil {
+		return nil, NewDatabaseError("seek_cell_position", err, map[string]interface{}{
+			"offset": offset,
+		})
 	}
 
 	var cell Cell
 
 	// Read payload size and rowid varints from file
 	payloadData := make([]byte, 64) // Read enough bytes to parse varints
-	if _, err := db.file.Read(payloadData); err != nil {
-		return nil, err
+	if _, err := db.Read(payloadData); err != nil {
+		return nil, NewDatabaseError("read_cell_varints", err, nil)
 	}
 
 	var bytesRead int
@@ -169,18 +199,26 @@ func (db *SQLiteDB) readCell(cellPointer CellPointer) (*Cell, error) {
 	// Read the actual payload data
 	payloadSize := int(cell.PayloadSize)
 	payload := make([]byte, payloadSize)
-	if _, err := db.file.Seek(int64(cellPointer.Offset())+int64(totalVarintBytes), 0); err != nil {
-		return nil, err
+	if _, err := db.Seek(int64(cellPointer.Offset())+int64(totalVarintBytes), 0); err != nil {
+		return nil, NewDatabaseError("seek_payload_position", err, map[string]interface{}{
+			"payload_offset": int64(cellPointer.Offset()) + int64(totalVarintBytes),
+		})
 	}
-	if _, err := db.file.Read(payload); err != nil {
-		return nil, err
+	if _, err := db.Read(payload); err != nil {
+		return nil, NewDatabaseError("read_payload_data", err, map[string]interface{}{
+			"payload_size": payloadSize,
+		})
 	}
 
 	// Parse record from payload (always one record per cell in table b-tree leaf)
 	var record Record
 	var headerOffset int
 	record.RecordHeader, headerOffset = readRecordHeader(payload, 0)
-	record.RecordBody, _ = readRecordBody(payload, headerOffset, record.RecordHeader)
+	var err error
+	record.RecordBody, _, err = readRecordBody(payload, headerOffset, record.RecordHeader)
+	if err != nil {
+		return nil, NewDatabaseError("parse_record_body", err, nil)
+	}
 	cell.Record = record
 
 	return &cell, nil
@@ -190,30 +228,35 @@ func (db *SQLiteDB) readCell(cellPointer CellPointer) (*Cell, error) {
 func (db *SQLiteDB) loadSchema() error {
 	// Seek to the first page header (after the 100-byte database header)
 	pageOffset := int64(100)
-	if _, err := db.file.Seek(pageOffset, 0); err != nil {
-		return err
+	if _, err := db.Seek(pageOffset, 0); err != nil {
+		return NewDatabaseError("seek_schema_page", err, map[string]interface{}{
+			"page_offset": pageOffset,
+		})
 	}
 
 	// Read the first page header (sqlite_master table)
 	pageHeader, err := db.readPageHeader()
 	if err != nil {
-		return err
+		return NewDatabaseError("read_schema_page_header", err, nil)
 	}
 
 	// Read cell pointer array (file position is now at start of cell pointer array)
 	cellPointers, err := db.readCellPointerArray(pageHeader.CellCount, pageOffset)
 	if err != nil {
-		return err
+		return err // Already wrapped in NewDatabaseError
 	}
 
 	// Read all cells from the schema table
 	db.schemaTable = make([]*Cell, 0, len(cellPointers))
 	db.schemaRecords = make([]*SchemaRecord, 0, len(cellPointers))
 
-	for _, pointer := range cellPointers {
+	for i, pointer := range cellPointers {
 		cell, err := db.readCell(pointer)
 		if err != nil {
-			return err
+			return NewDatabaseError("read_schema_cell", err, map[string]interface{}{
+				"cell_index":   i,
+				"cell_pointer": pointer,
+			})
 		}
 		db.schemaTable = append(db.schemaTable, cell)
 
