@@ -13,7 +13,6 @@ import (
 // Application represents the main application
 type Application struct {
 	db        *SQLiteDB
-	service   *DatabaseService
 	formatter OutputFormatter
 }
 
@@ -24,12 +23,10 @@ func NewApplication(dbPath string) (*Application, error) {
 		return nil, err
 	}
 
-	service := NewDatabaseService(db)
 	formatter := NewConsoleFormatter(os.Stdout)
 
 	return &Application{
 		db:        db,
-		service:   service,
 		formatter: formatter,
 	}, nil
 }
@@ -147,6 +144,7 @@ func (app *Application) handleSelect(stmt *sqlparser.Select) error {
 				return fmt.Errorf("unsupported function: %s", funcName)
 			case *sqlparser.ColName:
 				columnName := innerExpr.Name.String()
+				fmt.Println("Column Name:", columnName)
 				return app.handleSelectColumn(tableName, columnName)
 			default:
 				return fmt.Errorf("unsupported expression type: %T", innerExpr)
@@ -161,12 +159,12 @@ func (app *Application) handleSelect(stmt *sqlparser.Select) error {
 
 // handleSelectAll handles SELECT * statements
 func (app *Application) handleSelectAll(tableName string) error {
-	schema, err := app.service.GetTableSchema(tableName)
+	schema, err := app.db.GetTableSchema(tableName)
 	if err != nil {
 		return err
 	}
 
-	rows, err := app.service.GetTableRows(tableName)
+	rows, err := app.db.GetTableRows(tableName)
 	if err != nil {
 		return err
 	}
@@ -178,7 +176,7 @@ func (app *Application) handleSelectAll(tableName string) error {
 
 // handleSelectColumn handles SELECT column statements
 func (app *Application) handleSelectColumn(tableName, columnName string) error {
-	values, err := app.service.GetColumnValues(tableName, columnName)
+	values, err := app.db.GetColumnValues(tableName, columnName)
 	if err != nil {
 		return err
 	}
@@ -193,7 +191,7 @@ func (app *Application) handleSelectColumn(tableName, columnName string) error {
 
 // handleCount handles COUNT(*) statements
 func (app *Application) handleCount(tableName string) error {
-	count, err := app.service.GetRowCount(tableName)
+	count, err := app.db.GetRowCount(tableName)
 	if err != nil {
 		return err
 	}

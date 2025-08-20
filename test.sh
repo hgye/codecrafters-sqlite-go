@@ -52,7 +52,7 @@ echo
 
 # Build verification
 echo "=== Build Verification ==="
-if go build -o main app/errors.go app/formatter.go app/main.go app/readers.go app/service.go app/sqlite_db.go app/sqlite_table.go app/values.go; then
+if go build -o main app/errors.go app/formatter.go app/main.go app/readers.go  app/sqlite_db.go app/sqlite_table.go app/values.go; then
     echo "✓ Build successful"
     BUILD_RESULT=0
     

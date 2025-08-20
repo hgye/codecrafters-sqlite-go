@@ -323,56 +323,82 @@ func (t *Table) readTableCell() (*Cell, error) {
 	return &cell, nil
 }
 
-// GetAllRows returns all rows from this table
+// GetAllRows returns all rows from this table using modern readers
 func (t *Table) GetAllRows() ([]*Cell, error) {
-	// Calculate the page offset using (rootpage-1) * pagesize
-	pageOffset := int64((t.RootPage - 1)) * int64(t.db.header.PageSize)
+	pageReader := NewPageReader(t.db, t.db.header.PageSize)
+	varintReader := NewVarintReader(t.db)
 
-	// Seek to the table's root page
-	_, err := t.db.Seek(pageOffset, 0)
+	return t.readAllCellsWithReaders(pageReader, varintReader)
+}
+
+// readAllCellsWithReaders performs the actual cell reading using provided readers
+func (t *Table) readAllCellsWithReaders(pageReader *PageReader, varintReader *VarintReader) ([]*Cell, error) {
+	// Read page header
+	pageHeader, err := pageReader.ReadPageHeader(uint32(t.RootPage))
 	if err != nil {
-		return nil, fmt.Errorf("failed to seek to table page: %w", err)
+		return nil, NewDatabaseError("read_table_page_header", err, map[string]interface{}{
+			"table_name": t.Name,
+			"root_page":  t.RootPage,
+		})
 	}
 
-	// Read the page header
-	pageHeader, err := t.db.readPageHeader()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read page header: %w", err)
-	}
-
-	// Check if this is a table B-tree leaf page (type 0x0d)
+	// Validate page type
 	if pageHeader.PageType != 0x0d {
-		return nil, fmt.Errorf("expected table B-tree leaf page (0x0d), got 0x%02X", pageHeader.PageType)
+		return nil, NewDatabaseError("validate_table_page_type", ErrInvalidPageType, map[string]interface{}{
+			"table_name":    t.Name,
+			"expected_type": 0x0d,
+			"actual_type":   pageHeader.PageType,
+		})
 	}
 
 	// Read cell pointers
-	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount, pageOffset)
+	cellPointers, err := pageReader.ReadCellPointers(uint32(t.RootPage), pageHeader.CellCount)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read cell pointers: %w", err)
+		return nil, NewDatabaseError("read_table_cell_pointers", err, map[string]interface{}{
+			"table_name": t.Name,
+			"cell_count": pageHeader.CellCount,
+		})
 	}
 
-	// Read all cells
-	var cells []*Cell
-	for _, cellPointer := range cellPointers {
-		// Calculate absolute offset: page start + cell pointer
-		cellAbsoluteOffset := pageOffset + int64(cellPointer)
+	// Read all cells using the original approach that works
+	cells := make([]*Cell, 0, len(cellPointers))
+	for i, cellPointer := range cellPointers {
+		// Calculate absolute offset
+		pageOffset := t.calculatePageOffset(uint32(t.RootPage))
+		cellAbsoluteOffset := pageOffset + int64(cellPointer.Offset())
 
 		// Seek to the absolute cell position
 		_, err := t.db.Seek(cellAbsoluteOffset, 0)
 		if err != nil {
-			continue
+			return nil, NewDatabaseError("seek_to_cell", err, map[string]interface{}{
+				"table_name":  t.Name,
+				"cell_index":  i,
+				"cell_offset": cellAbsoluteOffset,
+			})
 		}
 
-		// Read table B-tree leaf cell
+		// Read table B-tree leaf cell using the original working method
 		cell, err := t.readTableCell()
 		if err != nil {
-			continue
+			return nil, NewDatabaseError("read_table_cell", err, map[string]interface{}{
+				"table_name":   t.Name,
+				"cell_index":   i,
+				"cell_pointer": cellPointer,
+			})
 		}
 
 		cells = append(cells, cell)
 	}
 
 	return cells, nil
+}
+
+// calculatePageOffset calculates the byte offset for a page number
+func (t *Table) calculatePageOffset(pageNum uint32) int64 {
+	if pageNum == 1 {
+		return 100 // First page starts after 100-byte header
+	}
+	return int64((pageNum - 1) * uint32(t.db.header.PageSize))
 }
 
 // GetRowCount returns the number of rows in this table

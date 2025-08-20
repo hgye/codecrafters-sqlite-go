@@ -2,7 +2,11 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
+	"strings"
+
+	"github.com/xwb1989/sqlparser"
 )
 
 // SQLiteDB represents a SQLite database file
@@ -344,4 +348,172 @@ func (db *SQLiteDB) GetSchemaObjects() []*SchemaRecord {
 	}
 
 	return objects
+}
+
+// GetTableSchema returns the schema for a table
+func (db *SQLiteDB) GetTableSchema(tableName string) ([]*Column, error) {
+	table := db.GetTable(tableName)
+	if table == nil {
+		return nil, NewDatabaseError("get_table_schema", ErrTableNotFound, map[string]interface{}{
+			"table_name": tableName,
+		})
+	}
+
+	return db.parseTableSchema(table.SchemaSQL)
+}
+
+// GetTableRows returns all rows from a table
+func (db *SQLiteDB) GetTableRows(tableName string) ([]*Row, error) {
+	table := db.GetTable(tableName)
+	if table == nil {
+		return nil, NewDatabaseError("get_table_rows", ErrTableNotFound, map[string]interface{}{
+			"table_name": tableName,
+		})
+	}
+
+	// Delegate to table for physical operations
+	cells, err := table.GetAllRows()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert cells to rows (business logic)
+	rows := make([]*Row, len(cells))
+	for i, cell := range cells {
+		row, err := db.cellToRow(cell)
+		if err != nil {
+			return nil, NewDatabaseError("convert_cell_to_row", err, map[string]interface{}{
+				"row_index": i,
+			})
+		}
+		rows[i] = row
+	}
+
+	return rows, nil
+}
+
+// GetColumnValues returns all values for a specific column
+func (db *SQLiteDB) GetColumnValues(tableName string, columnName string) ([]Value, error) {
+	schema, err := db.GetTableSchema(tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	columnIndex := -1
+	for _, col := range schema {
+		if strings.EqualFold(col.Name, columnName) {
+			columnIndex = col.Index
+			break
+		}
+	}
+
+	if columnIndex == -1 {
+		return nil, NewDatabaseError("find_column", ErrColumnNotFound, map[string]interface{}{
+			"column_name": columnName,
+			"table_name":  tableName,
+		})
+	}
+
+	rows, err := db.GetTableRows(tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	values := make([]Value, len(rows))
+	for i, row := range rows {
+		value, err := row.Get(columnIndex)
+		if err != nil {
+			return nil, NewDatabaseError("get_column_value_from_row", err, map[string]interface{}{
+				"row_index":    i,
+				"column_index": columnIndex,
+			})
+		}
+		values[i] = value
+	}
+
+	return values, nil
+}
+
+// GetRowCount returns the number of rows in a table
+func (db *SQLiteDB) GetRowCount(tableName string) (int, error) {
+	table := db.GetTable(tableName)
+	if table == nil {
+		return 0, NewDatabaseError("get_row_count", ErrTableNotFound, map[string]interface{}{
+			"table_name": tableName,
+		})
+	}
+
+	return table.GetRowCount()
+}
+
+// cellToRow converts a cell to a row
+func (db *SQLiteDB) cellToRow(cell *Cell) (*Row, error) {
+	values := make([]Value, len(cell.Record.RecordBody.Values))
+	for i, val := range cell.Record.RecordBody.Values {
+		if val == nil {
+			values[i] = NewSQLiteValue(0, nil) // NULL value
+		} else if bytes, ok := val.([]byte); ok {
+			// Determine serial type from the header
+			if i < len(cell.Record.RecordHeader.SerialTypes) {
+				serialType := cell.Record.RecordHeader.SerialTypes[i]
+				values[i] = NewSQLiteValue(serialType, bytes)
+			} else {
+				values[i] = NewSQLiteValue(12, bytes) // Default to BLOB
+			}
+		} else {
+			// Handle other value types
+			values[i] = NewSQLiteValue(12, []byte(fmt.Sprintf("%v", val)))
+		}
+	}
+
+	return &Row{Values: values}, nil
+}
+
+// parseTableSchema parses table schema from CREATE TABLE SQL
+func (db *SQLiteDB) parseTableSchema(schemaSQL string) ([]*Column, error) {
+	// Normalize SQLite syntax to MySQL syntax for sqlparser
+	normalizedSQL := normalizeSQLiteToMySQL(schemaSQL)
+
+	// Try to parse with sqlparser
+	stmt, err := sqlparser.Parse(normalizedSQL)
+	if err != nil {
+		return nil, NewDatabaseError("parse_schema_sql", err, map[string]interface{}{
+			"schema_sql":     schemaSQL,
+			"normalized_sql": normalizedSQL,
+		})
+	}
+
+	switch parsedStmt := stmt.(type) {
+	case *sqlparser.DDL:
+		if parsedStmt.Action != "create" || parsedStmt.TableSpec == nil {
+			return nil, NewDatabaseError("invalid_ddl_statement", ErrInvalidDatabase, map[string]interface{}{
+				"action": parsedStmt.Action,
+			})
+		}
+
+		columns := make([]*Column, len(parsedStmt.TableSpec.Columns))
+		for i, col := range parsedStmt.TableSpec.Columns {
+			columns[i] = &Column{
+				Name:     col.Name.String(),
+				Type:     col.Type.Type,
+				Index:    i,
+				Nullable: true, // Default assumption
+			}
+		}
+
+		return columns, nil
+
+	default:
+		return nil, NewDatabaseError("unsupported_schema_statement", ErrInvalidDatabase, map[string]interface{}{
+			"statement_type": parsedStmt,
+		})
+	}
+}
+
+// normalizeSQLiteToMySQL converts SQLite-specific syntax to MySQL syntax for sqlparser
+func normalizeSQLiteToMySQL(sql string) string {
+	// Fix MySQL syntax: "primary key autoincrement" should be "AUTO_INCREMENT PRIMARY KEY"
+	normalized := strings.ReplaceAll(sql, "primary key autoincrement", "AUTO_INCREMENT PRIMARY KEY")
+	normalized = strings.ReplaceAll(normalized, "PRIMARY KEY AUTOINCREMENT", "AUTO_INCREMENT PRIMARY KEY")
+	return normalized
 }
