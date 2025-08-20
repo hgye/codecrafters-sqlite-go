@@ -122,17 +122,25 @@ func (db *SQLiteDB) readPageHeader() (*PageHeader, error) {
 	return &pageHeader, nil
 }
 
-// readCellPointerArray reads the cell pointer array from a page
-func (db *SQLiteDB) readCellPointerArray(cellCount uint16) ([]CellPointer, error) {
+// readCellPointerArray reads the cell pointer array from a page at the specified page offset
+func (db *SQLiteDB) readCellPointerArray(cellCount uint16, pageOffset int64) ([]CellPointer, error) {
+	// Cell pointer array starts immediately after the page header
+	// The caller (readPageHeader) should have left the file position at the start of the cell pointer array
+	// We include pageOffset parameter for explicit documentation of where we're reading from
+
 	cellPointers := make([]uint16, cellCount)
 	if err := binary.Read(db.file, binary.BigEndian, &cellPointers); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read cell pointer array at page offset %d: %w", pageOffset, err)
 	}
 
-	// Convert []uint16 to []CellPointer
+	// Convert []uint16 to []CellPointer and validate
 	result := make([]CellPointer, cellCount)
 	for i, pointer := range cellPointers {
 		result[i] = CellPointer(pointer)
+		// Validate that cell pointer is within reasonable range (not zero, within page bounds)
+		if pointer == 0 || pointer > uint16(db.header.PageSize) {
+			return nil, fmt.Errorf("invalid cell pointer %d at index %d: value %d", i, i, pointer)
+		}
 	}
 	return result, nil
 }
@@ -181,7 +189,8 @@ func (db *SQLiteDB) readCell(cellPointer CellPointer) (*Cell, error) {
 // loadSchema loads the schema table (sqlite_master) content
 func (db *SQLiteDB) loadSchema() error {
 	// Seek to the first page header (after the 100-byte database header)
-	if _, err := db.file.Seek(100, 0); err != nil {
+	pageOffset := int64(100)
+	if _, err := db.file.Seek(pageOffset, 0); err != nil {
 		return err
 	}
 
@@ -191,8 +200,8 @@ func (db *SQLiteDB) loadSchema() error {
 		return err
 	}
 
-	// Read cell pointer array
-	cellPointers, err := db.readCellPointerArray(pageHeader.CellCount)
+	// Read cell pointer array (file position is now at start of cell pointer array)
+	cellPointers, err := db.readCellPointerArray(pageHeader.CellCount, pageOffset)
 	if err != nil {
 		return err
 	}

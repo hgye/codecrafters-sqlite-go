@@ -264,7 +264,7 @@ func (t *Table) ReadColumn(columnIndex int) error {
 	}
 
 	// Read cell pointers (these are relative offsets within the page)
-	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount)
+	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount, pageOffset)
 	if err != nil {
 		return fmt.Errorf("failed to read cell pointers: %w", err)
 	}
@@ -273,6 +273,7 @@ func (t *Table) ReadColumn(columnIndex int) error {
 	for _, cellPointer := range cellPointers {
 		// Calculate absolute offset: page start + cell pointer
 		cellAbsoluteOffset := pageOffset + int64(cellPointer)
+		// fmt.Printf("DEBUG: Reading cell at absolute offset: 0x%x\n", cellAbsoluteOffset)
 
 		// Seek to the absolute cell position
 		_, err := t.db.file.Seek(cellAbsoluteOffset, 0)
@@ -314,6 +315,12 @@ func (t *Table) ReadColumn(columnIndex int) error {
 func (t *Table) readTableCell() (*Cell, error) {
 	var cell Cell
 
+	// Remember the starting position
+	cellStart, err := t.db.file.Seek(0, 1)
+	if err != nil {
+		return nil, err
+	}
+
 	// Read payload size and rowid varints from file
 	payloadData := make([]byte, 64) // Read enough bytes to parse varints
 	if _, err := t.db.file.Read(payloadData); err != nil {
@@ -326,9 +333,8 @@ func (t *Table) readTableCell() (*Cell, error) {
 	cell.Rowid, rowidBytesRead = readVarint(payloadData, bytesRead)
 	totalVarintBytes := bytesRead + rowidBytesRead
 
-	// Seek back to the start of payload data (after varints)
-	currentPos, _ := t.db.file.Seek(0, 1) // Get current position
-	payloadStart := currentPos - int64(len(payloadData)) + int64(totalVarintBytes)
+	// Calculate payload start directly from cell start
+	payloadStart := cellStart + int64(totalVarintBytes)
 	if _, err := t.db.file.Seek(payloadStart, 0); err != nil {
 		return nil, err
 	}
@@ -373,7 +379,7 @@ func (t *Table) GetAllRows() ([]*Cell, error) {
 	}
 
 	// Read cell pointers
-	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount)
+	cellPointers, err := t.db.readCellPointerArray(pageHeader.CellCount, pageOffset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read cell pointers: %w", err)
 	}

@@ -76,7 +76,7 @@ func runProgram(args []string) error {
 
 			// Extract table name from FROM clause
 			tableName := extractTableName(parsedStmt)
-			fmt.Fprintf(os.Stderr, "Parsed SELECT statement for table: %s\n", tableName)
+			// fmt.Fprintf(os.Stderr, "Parsed SELECT statement for table: %s\n", tableName)
 
 			// Process the SELECT expressions using dedicated function
 			err := processSelectExpressions(parsedStmt.SelectExprs, tableName, db)
@@ -132,11 +132,11 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 
 		case *sqlparser.AliasedExpr:
 			// Check if it's a function call like COUNT(*) or a regular column
-			fmt.Fprintf(os.Stderr, "Processing AliasedExpr with inner type: %T\n", selectExpr.Expr)
+			// fmt.Fprintf(os.Stderr, "Processing AliasedExpr with inner type: %T\n", selectExpr.Expr)
 			switch innerExpr := selectExpr.Expr.(type) {
 			case *sqlparser.FuncExpr:
 				funcName := innerExpr.Name.String()
-				fmt.Fprintf(os.Stderr, "Found function: %s\n", funcName)
+				// fmt.Fprintf(os.Stderr, "Found function: %s\n", funcName)
 
 				if strings.ToLower(funcName) == "count" {
 					// Handle COUNT(*) function
@@ -149,7 +149,7 @@ func processSelectExpressions(selectExprs sqlparser.SelectExprs, tableName strin
 			case *sqlparser.ColName:
 				// Handle regular column name
 				columnName := innerExpr.Name.String()
-				fmt.Fprintf(os.Stderr, "Found column name: %s\n", columnName)
+				// fmt.Fprintf(os.Stderr, "Found column name: %s\n", columnName)
 
 				// Call handleSelectColumn to validate and get column info
 				// fmt.Fprintf(os.Stderr, "Calling handleSelectColumn for table: %s, column: %s\n", tableName, columnName)
@@ -195,11 +195,11 @@ func handleSelectColumn(tableName string, colName string, db *SQLiteDB) error {
 		return fmt.Errorf("table %s not found", tableName)
 	}
 
-	fmt.Fprintf(os.Stderr, "Schema SQL: %s\n", table.SchemaSQL)
+	// fmt.Fprintf(os.Stderr, "Schema SQL: %s\n", table.SchemaSQL)
 
 	// Normalize SQLite syntax to MySQL syntax for sqlparser
 	normalizedSQL := normalizeSQLiteToMySQL(table.SchemaSQL)
-	fmt.Fprintf(os.Stderr, "Normalized SQL: %s\n", normalizedSQL)
+	// fmt.Fprintf(os.Stderr, "Normalized SQL: %s\n", normalizedSQL)
 
 	// Try to parse with sqlparser
 	stmt, err := sqlparser.Parse(normalizedSQL)
@@ -213,19 +213,19 @@ func handleSelectColumn(tableName string, colName string, db *SQLiteDB) error {
 			return fmt.Errorf("unexpected DDL statement: action=%s", parsedStmt.Action)
 		}
 
-		fmt.Fprintf(os.Stderr, "Found CREATE TABLE statement (via sqlparser) for table: %s\n", tableName)
-		fmt.Fprintf(os.Stderr, "Columns in table:\n")
+		// fmt.Fprintf(os.Stderr, "Found CREATE TABLE statement (via sqlparser) for table: %s\n", tableName)
+		// fmt.Fprintf(os.Stderr, "Columns in table:\n")
 
 		// Look through the columns in the TableSpec to find the column index
 		columnIndex := -1
 		for i, col := range parsedStmt.TableSpec.Columns {
 			columnName := col.Name.String()
-			columnType := col.Type.Type
-			fmt.Fprintf(os.Stderr, "  - %s (%s)\n", columnName, columnType)
+			// columnType := col.Type.Type
+			// fmt.Fprintf(os.Stderr, "  - %s (%s)\n", columnName, columnType)
 
 			if strings.EqualFold(columnName, colName) {
 				columnIndex = i
-				fmt.Fprintf(os.Stderr, "Found target column %s at index %d\n", columnName, i)
+				// fmt.Fprintf(os.Stderr, "Found target column %s at index %d\n", columnName, i)
 				break
 			}
 		}

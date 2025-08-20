@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch file",
+            "name": "select name from oranges",
             "type": "go",
             "request": "launch",
             "mode": "debug",
@@ -13,7 +13,7 @@
             "cwd": "${workspaceFolder}",
             "args": [
                 "sample.db",
-                "SELECT COUNT(*) FROM oranges;"
+                "SELECT name FROM oranges;"
             ]
         }
     ]
