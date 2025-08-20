@@ -13,7 +13,7 @@
             "cwd": "${workspaceFolder}",
             "args": [
                 "sample.db",
-                "SELECT name FROM oranges;"
+                "SELECT name, color FROM oranges;"
             ]
         }
     ]

@@ -39,6 +39,11 @@ func TestMainFunctionality(t *testing.T) {
 			args:     []string{"test", dbPath, "SELECT", "name", "FROM", "apples"},
 			contains: []string{"Granny Smith", "Fuji", "Honeycrisp", "Golden Delicious"},
 		},
+		{
+			name:     "sql select with multiple columns",
+			args:     []string{"test", dbPath, "SELECT", "name, color", "FROM", "apples"},
+			contains: []string{"Granny Smith|Light Green", "Fuji|Red", "Honeycrisp|Blush Red", "Golden Delicious|Yellow"},
+		},
 	}
 
 	for _, tt := range tests {

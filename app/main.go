@@ -129,23 +129,27 @@ func (app *Application) handleSelect(stmt *sqlparser.Select) error {
 		return fmt.Errorf("could not extract table name from SELECT statement")
 	}
 
-	// Process SELECT expressions
+	var columnNames []string
+	var hasStarExpr bool
+	var hasCountFunc bool
+
+	// First pass: collect all column names and check for special cases
 	for _, expr := range stmt.SelectExprs {
 		switch selectExpr := expr.(type) {
 		case *sqlparser.StarExpr:
-			return app.handleSelectAll(tableName)
+			hasStarExpr = true
 		case *sqlparser.AliasedExpr:
 			switch innerExpr := selectExpr.Expr.(type) {
 			case *sqlparser.FuncExpr:
 				funcName := strings.ToLower(innerExpr.Name.String())
 				if funcName == "count" {
-					return app.handleCount(tableName)
+					hasCountFunc = true
+				} else {
+					return fmt.Errorf("unsupported function: %s", funcName)
 				}
-				return fmt.Errorf("unsupported function: %s", funcName)
 			case *sqlparser.ColName:
 				columnName := innerExpr.Name.String()
-				fmt.Println("Column Name:", columnName)
-				return app.handleSelectColumn(tableName, columnName)
+				columnNames = append(columnNames, columnName)
 			default:
 				return fmt.Errorf("unsupported expression type: %T", innerExpr)
 			}
@@ -154,7 +158,16 @@ func (app *Application) handleSelect(stmt *sqlparser.Select) error {
 		}
 	}
 
-	return nil
+	// Handle different cases
+	if hasStarExpr {
+		return app.handleSelectAll(tableName)
+	} else if hasCountFunc {
+		return app.handleCount(tableName)
+	} else if len(columnNames) > 0 {
+		return app.handleSelectColumns(tableName, columnNames)
+	}
+
+	return fmt.Errorf("no valid columns found in SELECT statement")
 }
 
 // handleSelectAll handles SELECT * statements
@@ -174,16 +187,53 @@ func (app *Application) handleSelectAll(tableName string) error {
 	return nil
 }
 
-// handleSelectColumn handles SELECT column statements
-func (app *Application) handleSelectColumn(tableName, columnName string) error {
-	values, err := app.db.GetColumnValues(tableName, columnName)
+// handleSelectColumns handles SELECT column statements (single or multiple columns)
+func (app *Application) handleSelectColumns(tableName string, columnNames []string) error {
+	// Get table schema to validate columns and get their indices
+	schema, err := app.db.GetTableSchema(tableName)
 	if err != nil {
 		return err
 	}
 
-	for _, value := range values {
-		formatted := app.formatter.FormatValue(value)
-		fmt.Println(formatted)
+	// Create a map for quick column index lookup
+	columnIndexMap := make(map[string]int)
+	for _, col := range schema {
+		columnIndexMap[strings.ToLower(col.Name)] = col.Index
+	}
+
+	// Validate all requested columns exist and get their indices
+	columnIndices := make([]int, len(columnNames))
+	for i, columnName := range columnNames {
+		if index, exists := columnIndexMap[strings.ToLower(columnName)]; exists {
+			columnIndices[i] = index
+		} else {
+			return fmt.Errorf("column '%s' not found in table '%s'", columnName, tableName)
+		}
+	}
+
+	// Get all rows
+	rows, err := app.db.GetTableRows(tableName)
+	if err != nil {
+		return err
+	}
+
+	// Output the selected columns for each row
+	for _, row := range rows {
+		rowValues := make([]string, len(columnIndices))
+		for i, colIndex := range columnIndices {
+			value, err := row.Get(colIndex)
+			if err != nil {
+				return fmt.Errorf("error getting value for column index %d: %v", colIndex, err)
+			}
+			rowValues[i] = app.formatter.FormatValue(value)
+		}
+
+		// For single column, print one per line; for multiple columns, print tab-separated
+		if len(rowValues) == 1 {
+			fmt.Println(rowValues[0])
+		} else {
+			fmt.Println(strings.Join(rowValues, "|"))
+		}
 	}
 
 	return nil
