@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/xwb1989/sqlparser"
 )
@@ -50,11 +52,14 @@ func (engine *SqliteEngine) ExecuteCommand(command, args string) error {
 
 // handleDBInfo handles the .dbinfo command
 func (engine *SqliteEngine) handleDBInfo() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// TODO: Add GetPageSize() and GetTableCount() to Database interface
 	// For now, provide placeholder values
 	fmt.Printf("database page size: %v\n", 4096)
 
-	tables, err := engine.db.GetTables()
+	tables, err := engine.db.GetTables(ctx)
 	if err != nil {
 		return err
 	}
@@ -64,7 +69,10 @@ func (engine *SqliteEngine) handleDBInfo() error {
 
 // handleTables handles the .tables command
 func (engine *SqliteEngine) handleTables() error {
-	tableNames, err := engine.db.GetTables()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tableNames, err := engine.db.GetTables(ctx)
 	if err != nil {
 		return err
 	}
@@ -277,17 +285,20 @@ func (engine *SqliteEngine) compareValues(rowValue Value, compValue interface{},
 
 // handleSelectAll handles SELECT * statements
 func (engine *SqliteEngine) handleSelectAll(tableName string, whereClause *sqlparser.Where) error {
-	table, err := engine.db.GetTable(tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	table, err := engine.db.GetTable(ctx, tableName)
 	if err != nil {
 		return err
 	}
 
-	schema, err := table.GetSchema()
+	schema, err := table.GetSchema(ctx)
 	if err != nil {
 		return err
 	}
 
-	rows, err := table.GetRows()
+	rows, err := table.GetRows(ctx)
 	if err != nil {
 		return err
 	}
@@ -317,14 +328,17 @@ func (engine *SqliteEngine) handleSelectAll(tableName string, whereClause *sqlpa
 
 // handleSelectColumns handles SELECT column statements (single or multiple columns)
 func (engine *SqliteEngine) handleSelectColumns(tableName string, columnNames []string, whereClause *sqlparser.Where) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// Get table instance
-	table, err := engine.db.GetTable(tableName)
+	table, err := engine.db.GetTable(ctx, tableName)
 	if err != nil {
 		return err
 	}
 
 	// Get table schema to validate columns and get their indices
-	schema, err := table.GetSchema()
+	schema, err := table.GetSchema(ctx)
 	if err != nil {
 		return err
 	}
@@ -346,7 +360,7 @@ func (engine *SqliteEngine) handleSelectColumns(tableName string, columnNames []
 	}
 
 	// Get all rows
-	rows, err := table.GetRows()
+	rows, err := table.GetRows(ctx)
 	if err != nil {
 		return err
 	}
@@ -393,14 +407,17 @@ func (engine *SqliteEngine) handleSelectColumns(tableName string, columnNames []
 
 // handleCount handles COUNT(*) statements
 func (engine *SqliteEngine) handleCount(tableName string, whereClause *sqlparser.Where) error {
-	table, err := engine.db.GetTable(tableName)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	table, err := engine.db.GetTable(ctx, tableName)
 	if err != nil {
 		return err
 	}
 
 	if whereClause == nil {
 		// If no WHERE clause, use the optimized row count method
-		count, err := table.Count()
+		count, err := table.Count(ctx)
 		if err != nil {
 			return err
 		}
@@ -410,12 +427,12 @@ func (engine *SqliteEngine) handleCount(tableName string, whereClause *sqlparser
 	}
 
 	// If there's a WHERE clause, we need to fetch and filter rows
-	schema, err := table.GetSchema()
+	schema, err := table.GetSchema(ctx)
 	if err != nil {
 		return err
 	}
 
-	rows, err := table.GetRows()
+	rows, err := table.GetRows(ctx)
 	if err != nil {
 		return err
 	}

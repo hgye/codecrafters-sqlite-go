@@ -1,42 +1,202 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"io"
+)
 
 // Logical layer interfaces - clean user-facing API
 
 // Database represents a logical database with high-level operations
 type Database interface {
-	GetSchema() ([]SchemaRecord, error)
-	GetTable(name string) (Table, error)
-	GetTables() ([]string, error)
-	Close() error
+	SchemaReader
+	TableProvider
+	io.Closer
+}
+
+// SchemaReader provides schema reading capabilities
+type SchemaReader interface {
+	GetSchema(ctx context.Context) ([]SchemaRecord, error)
+	GetTables(ctx context.Context) ([]string, error)
+}
+
+// TableProvider provides table access capabilities
+type TableProvider interface {
+	GetTable(ctx context.Context, name string) (Table, error)
 }
 
 // Table represents a logical table with user-friendly operations
 type Table interface {
-	GetSchema() ([]Column, error)
-	GetRows() ([]Row, error)
-	SelectColumns(columns []string) ([]Row, error)
-	Filter(condition func(Row) bool) ([]Row, error)
-	Count() (int, error)
+	SchemaProvider
+	DataReader
+	DataFilter
 	GetName() string
+}
+
+// SchemaProvider provides schema information
+type SchemaProvider interface {
+	GetSchema(ctx context.Context) ([]Column, error)
+}
+
+// DataReader provides data reading capabilities
+type DataReader interface {
+	GetRows(ctx context.Context) ([]Row, error)
+	Count(ctx context.Context) (int, error)
+}
+
+// DataFilter provides data filtering capabilities
+type DataFilter interface {
+	SelectColumns(ctx context.Context, columns []string) ([]Row, error)
+	Filter(ctx context.Context, condition func(Row) bool) ([]Row, error)
 }
 
 // Physical layer interfaces - handle SQLite file format
 
 // DatabaseRaw handles raw SQLite file I/O operations
 type DatabaseRaw interface {
-	ReadPage(pageNum int) ([]byte, error)
-	ReadSchemaTable() ([]Cell, error)
+	PageReader
+	SchemaTableReader
+	io.Closer
+}
+
+// PageReader provides page reading capabilities
+type PageReader interface {
+	ReadPage(ctx context.Context, pageNum int) ([]byte, error)
 	GetPageSize() int
-	Close() error
+}
+
+// SchemaTableReader provides schema table reading capabilities
+type SchemaTableReader interface {
+	ReadSchemaTable(ctx context.Context) ([]Cell, error)
 }
 
 // TableRaw handles raw table data access from SQLite format
 type TableRaw interface {
-	ReadAllCells() ([]Cell, error)
+	CellReader
 	GetRootPage() int
 	GetName() string
+}
+
+// CellReader provides cell reading capabilities
+type CellReader interface {
+	ReadAllCells(ctx context.Context) ([]Cell, error)
+}
+
+// Configuration and Options
+
+// DatabaseConfig holds database configuration options
+type DatabaseConfig struct {
+	PageCacheSize   int
+	MaxConcurrency  int
+	ReadTimeout     int // milliseconds
+	ValidationMode  ValidationLevel
+	EnableProfiling bool
+}
+
+// ValidationLevel defines validation strictness
+type ValidationLevel int
+
+const (
+	ValidationNone ValidationLevel = iota
+	ValidationBasic
+	ValidationStrict
+)
+
+// DatabaseOption represents a functional option for database configuration
+type DatabaseOption func(*DatabaseConfig)
+
+// WithPageCacheSize sets the page cache size
+func WithPageCacheSize(size int) DatabaseOption {
+	return func(cfg *DatabaseConfig) {
+		cfg.PageCacheSize = size
+	}
+}
+
+// WithMaxConcurrency sets the maximum number of concurrent operations
+func WithMaxConcurrency(max int) DatabaseOption {
+	return func(cfg *DatabaseConfig) {
+		cfg.MaxConcurrency = max
+	}
+}
+
+// WithReadTimeout sets the read timeout in milliseconds
+func WithReadTimeout(timeout int) DatabaseOption {
+	return func(cfg *DatabaseConfig) {
+		cfg.ReadTimeout = timeout
+	}
+}
+
+// WithValidation sets the validation level
+func WithValidation(level ValidationLevel) DatabaseOption {
+	return func(cfg *DatabaseConfig) {
+		cfg.ValidationMode = level
+	}
+}
+
+// WithProfiling enables or disables profiling
+func WithProfiling(enabled bool) DatabaseOption {
+	return func(cfg *DatabaseConfig) {
+		cfg.EnableProfiling = enabled
+	}
+}
+
+// DefaultDatabaseConfig returns the default configuration
+func DefaultDatabaseConfig() *DatabaseConfig {
+	return &DatabaseConfig{
+		PageCacheSize:   100,
+		MaxConcurrency:  10,
+		ReadTimeout:     5000, // 5 seconds
+		ValidationMode:  ValidationBasic,
+		EnableProfiling: false,
+	}
+}
+
+// Resource Management
+
+// ResourceManager handles cleanup of multiple resources
+type ResourceManager struct {
+	resources []io.Closer
+	cleaners  []func() error
+}
+
+// NewResourceManager creates a new resource manager
+func NewResourceManager() *ResourceManager {
+	return &ResourceManager{
+		resources: make([]io.Closer, 0),
+		cleaners:  make([]func() error, 0),
+	}
+}
+
+// Add adds a closeable resource to be managed
+func (rm *ResourceManager) Add(resource io.Closer) {
+	rm.resources = append(rm.resources, resource)
+}
+
+// AddCleaner adds a custom cleanup function
+func (rm *ResourceManager) AddCleaner(cleaner func() error) {
+	rm.cleaners = append(rm.cleaners, cleaner)
+}
+
+// Close closes all managed resources in reverse order (LIFO)
+func (rm *ResourceManager) Close() error {
+	var lastErr error
+
+	// Run custom cleaners first (LIFO)
+	for i := len(rm.cleaners) - 1; i >= 0; i-- {
+		if err := rm.cleaners[i](); err != nil {
+			lastErr = err
+		}
+	}
+
+	// Close resources (LIFO)
+	for i := len(rm.resources) - 1; i >= 0; i-- {
+		if err := rm.resources[i].Close(); err != nil {
+			lastErr = err
+		}
+	}
+
+	return lastErr
 }
 
 // Physical data structures from SQLite format

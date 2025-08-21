@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -22,18 +23,16 @@ func NewTableRaw(dbRaw DatabaseRaw, name string, rootPage int) *TableRawImpl {
 	}
 }
 
-// ReadAllCells reads all cells from the table's root page
-func (tr *TableRawImpl) ReadAllCells() ([]Cell, error) {
+// ReadAllCells reads all cells from the table's root page with context
+func (tr *TableRawImpl) ReadAllCells(ctx context.Context) ([]Cell, error) {
 	// Read the table's root page
-	pageData, err := tr.dbRaw.ReadPage(tr.rootPage)
+	pageData, err := tr.dbRaw.ReadPage(ctx, tr.rootPage)
 	if err != nil {
-		return nil, NewDatabaseError("read_table_page", err, map[string]interface{}{
-			"table":     tr.name,
-			"root_page": tr.rootPage,
-		})
+		return nil, fmt.Errorf("read table page %d for table %s: %w",
+			tr.rootPage, tr.name, err)
 	}
 
-	return tr.readCellsFromPage(pageData)
+	return tr.readCellsFromPage(ctx, pageData)
 }
 
 // GetRootPage returns the root page number
@@ -46,23 +45,23 @@ func (tr *TableRawImpl) GetName() string {
 	return tr.name
 }
 
-// readCellsFromPage reads all cells from a page
-func (tr *TableRawImpl) readCellsFromPage(pageData []byte) ([]Cell, error) {
+// readCellsFromPage reads all cells from a page with context support
+func (tr *TableRawImpl) readCellsFromPage(ctx context.Context, pageData []byte) ([]Cell, error) {
+	// Check context before starting work
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read cells cancelled: %w", err)
+	}
+
 	if len(pageData) < 8 {
-		return nil, NewDatabaseError("read_table_cells", fmt.Errorf("page too small"), map[string]interface{}{
-			"table":     tr.name,
-			"page_size": len(pageData),
-		})
+		return nil, fmt.Errorf("page too small for table %s: have %d bytes, need at least 8",
+			tr.name, len(pageData))
 	}
 
 	// Parse page header
 	pageType := pageData[0]
 	if pageType != 0x0D { // Leaf table b-tree page
-		return nil, NewDatabaseError("read_table_cells", fmt.Errorf("unexpected page type"), map[string]interface{}{
-			"table":    tr.name,
-			"expected": "0x0D (leaf table)",
-			"actual":   fmt.Sprintf("0x%02X", pageType),
-		})
+		return nil, fmt.Errorf("unexpected page type for table %s: expected 0x0D (leaf table), got 0x%02X",
+			tr.name, pageType)
 	}
 
 	// Read cell count (bytes 3-4)
@@ -73,14 +72,13 @@ func (tr *TableRawImpl) readCellsFromPage(pageData []byte) ([]Cell, error) {
 	for i := uint16(0); i < cellCount; i++ {
 		offset := 8 + i*2
 		if int(offset+1) >= len(pageData) {
-			return nil, NewDatabaseError("read_table_cell_pointers", fmt.Errorf("cell pointer array overflow"), map[string]interface{}{
-				"table": tr.name,
-			})
+			return nil, fmt.Errorf("cell pointer array overflow for table %s at offset %d",
+				tr.name, offset)
 		}
 		cellPointers[i] = CellPointer(binary.BigEndian.Uint16(pageData[offset : offset+2]))
 	}
 
-	// Read cells in parallel using goroutines
+	// Read cells in parallel with context support
 	cells := make([]Cell, cellCount)
 	errors := make([]error, cellCount)
 	var wg sync.WaitGroup
@@ -91,13 +89,18 @@ func (tr *TableRawImpl) readCellsFromPage(pageData []byte) ([]Cell, error) {
 		go func(index int, cellPointer CellPointer) {
 			defer wg.Done()
 
+			// Check context in goroutine
+			select {
+			case <-ctx.Done():
+				errors[index] = fmt.Errorf("cell read cancelled for table %s: %w", tr.name, ctx.Err())
+				return
+			default:
+			}
+
 			cell, err := tr.readCell(pageData, int(cellPointer.Offset()))
 			if err != nil {
-				errors[index] = NewDatabaseError("read_table_cell", err, map[string]interface{}{
-					"table":      tr.name,
-					"cell_index": index,
-					"offset":     cellPointer.Offset(),
-				})
+				errors[index] = fmt.Errorf("read cell %d at offset %d for table %s: %w",
+					index, cellPointer.Offset(), tr.name, err)
 				return
 			}
 			cells[index] = *cell

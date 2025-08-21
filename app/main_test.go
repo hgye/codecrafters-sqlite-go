@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -156,7 +157,8 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 	defer db.Close()
 
 	// Test schema parsing
-	schema, err := db.GetSchema()
+	ctx := context.Background()
+	schema, err := db.GetSchema(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get schema: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 	}
 
 	// Test table creation from schema
-	tables, err := db.GetTables()
+	tables, err := db.GetTables(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get tables: %v", err)
 	}
@@ -187,7 +189,7 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 	}
 
 	// Test schema objects include all types
-	objects, err := db.GetSchema()
+	objects, err := db.GetSchema(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get schema: %v", err)
 	}

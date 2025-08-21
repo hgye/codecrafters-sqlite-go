@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,37 +10,66 @@ import (
 	"sync"
 )
 
-// DatabaseRawImpl implements DatabaseRawInterface
+// DatabaseRawImpl implements DatabaseRawInterface with context support
 type DatabaseRawImpl struct {
-	file     *os.File
-	header   *DatabaseHeader
-	pageSize int
+	file           *os.File
+	header         *DatabaseHeader
+	pageSize       int
+	config         *DatabaseConfig
+	resourceMgr    *ResourceManager
+	concurrencySem chan struct{} // Semaphore for limiting concurrency
 }
 
-// NewDatabaseRaw creates a new raw database instance
-func NewDatabaseRaw(filePath string) (*DatabaseRawImpl, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, NewDatabaseError("open_database_file", err, map[string]interface{}{
-			"file_path": filePath,
-		})
+// NewDatabaseRaw creates a new raw database instance with functional options
+func NewDatabaseRaw(filePath string, options ...DatabaseOption) (*DatabaseRawImpl, error) {
+	// Apply configuration options
+	config := DefaultDatabaseConfig()
+	for _, opt := range options {
+		opt(config)
 	}
 
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open database file: %w", err)
+	}
+
+	// Create resource manager
+	resourceMgr := NewResourceManager()
+	resourceMgr.Add(file)
+
+	// Create concurrency semaphore
+	concurrencySem := make(chan struct{}, config.MaxConcurrency)
+
 	db := &DatabaseRawImpl{
-		file: file,
+		file:           file,
+		config:         config,
+		resourceMgr:    resourceMgr,
+		concurrencySem: concurrencySem,
 	}
 
 	// Parse the database header
 	if err := db.parseHeader(); err != nil {
-		file.Close()
-		return nil, NewDatabaseError("parse_database_header", err, nil)
+		resourceMgr.Close()
+		return nil, fmt.Errorf("parse database header: %w", err)
 	}
 
 	return db, nil
 }
 
-// ReadPage reads a page from the database file
-func (db *DatabaseRawImpl) ReadPage(pageNum int) ([]byte, error) {
+// ReadPage reads a page from the database file with context support
+func (db *DatabaseRawImpl) ReadPage(ctx context.Context, pageNum int) ([]byte, error) {
+	// Acquire concurrency semaphore
+	select {
+	case db.concurrencySem <- struct{}{}:
+		defer func() { <-db.concurrencySem }()
+	case <-ctx.Done():
+		return nil, fmt.Errorf("read page cancelled: %w", ctx.Err())
+	}
+
+	// Check context before doing work
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read page context error: %w", err)
+	}
 
 	// Offset start at (pageNum-1) * pageSize
 	offset := int64(pageNum-1) * int64(db.pageSize)
@@ -47,32 +77,26 @@ func (db *DatabaseRawImpl) ReadPage(pageNum int) ([]byte, error) {
 	pageData := make([]byte, db.pageSize)
 	n, err := db.file.ReadAt(pageData, offset)
 	if err != nil {
-		return nil, NewDatabaseError("read_page", err, map[string]interface{}{
-			"page_num": pageNum,
-			"offset":   offset,
-		})
+		return nil, fmt.Errorf("read page %d at offset %d: %w", pageNum, offset, err)
 	}
 	if n != db.pageSize {
-		return nil, NewDatabaseError("read_page", fmt.Errorf("incomplete page read"), map[string]interface{}{
-			"page_num":      pageNum,
-			"expected_size": db.pageSize,
-			"actual_size":   n,
-		})
+		return nil, fmt.Errorf("incomplete page read: page %d, expected %d bytes, got %d",
+			pageNum, db.pageSize, n)
 	}
 
 	return pageData, nil
 }
 
-// ReadSchemaTable reads the schema table (sqlite_schema/sqlite_master) from page 1
-func (db *DatabaseRawImpl) ReadSchemaTable() ([]Cell, error) {
+// ReadSchemaTable reads the schema table (sqlite_schema/sqlite_master) from page 1 with context
+func (db *DatabaseRawImpl) ReadSchemaTable(ctx context.Context) ([]Cell, error) {
 	// Schema table is always on page 1
-	pageData, err := db.ReadPage(1)
+	pageData, err := db.ReadPage(ctx, 1)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read schema table page: %w", err)
 	}
 
 	// For page 1, the page header starts at offset 100, but cell offsets are relative to page start (offset 0)
-	return db.readCellsFromPage1(pageData)
+	return db.readCellsFromPage1(ctx, pageData)
 }
 
 // GetPageSize returns the database page size
@@ -85,10 +109,10 @@ func (db *DatabaseRawImpl) GetHeader() *DatabaseHeader {
 	return db.header
 }
 
-// Close closes the database file
+// Close closes the database file using resource manager
 func (db *DatabaseRawImpl) Close() error {
-	if db.file != nil {
-		return db.file.Close()
+	if db.resourceMgr != nil {
+		return db.resourceMgr.Close()
 	}
 	return nil
 }
@@ -97,7 +121,7 @@ func (db *DatabaseRawImpl) Close() error {
 func (db *DatabaseRawImpl) parseHeader() error {
 	// Seek to the beginning of the file
 	if _, err := db.file.Seek(0, io.SeekStart); err != nil {
-		return NewDatabaseError("seek_header", err, nil)
+		return fmt.Errorf("seek to header: %w", err)
 	}
 
 	// Create a new header instance
@@ -105,15 +129,13 @@ func (db *DatabaseRawImpl) parseHeader() error {
 
 	// Use binary.Read to parse the header in a structured way
 	if err := binary.Read(db.file, binary.BigEndian, db.header); err != nil {
-		return NewDatabaseError("read_header", err, nil)
+		return fmt.Errorf("read header: %w", err)
 	}
 
 	// Validate magic number using the new method
 	if !db.header.IsValidMagicNumber() {
-		return NewDatabaseError("invalid_magic", fmt.Errorf("invalid SQLite magic number"), map[string]interface{}{
-			"expected": "SQLite format 3",
-			"actual":   string(db.header.MagicNumber[:15]), // Exclude null terminator
-		})
+		return fmt.Errorf("invalid SQLite magic number: expected 'SQLite format 3', got '%s'",
+			string(db.header.MagicNumber[:15]))
 	}
 
 	// Set page size using the helper method
@@ -121,47 +143,48 @@ func (db *DatabaseRawImpl) parseHeader() error {
 
 	// Validate page size
 	if db.pageSize < 512 || db.pageSize > 65536 || (db.pageSize&(db.pageSize-1)) != 0 {
-		return NewDatabaseError("invalid_page_size", fmt.Errorf("invalid page size"), map[string]interface{}{
-			"page_size": db.pageSize,
-		})
+		return fmt.Errorf("invalid page size: %d (must be power of 2 between 512 and 65536)",
+			db.pageSize)
 	}
 
 	return nil
 }
 
-// readCellsFromPage1 reads all cells from page 1 using structured parsing
-func (db *DatabaseRawImpl) readCellsFromPage1(pageData []byte) ([]Cell, error) {
+// readCellsFromPage1 reads all cells from page 1 using structured parsing with context
+func (db *DatabaseRawImpl) readCellsFromPage1(ctx context.Context, pageData []byte) ([]Cell, error) {
+	// Check context before starting work
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read cells cancelled: %w", err)
+	}
+
 	// Page header starts at offset 100 (after database header)
 	const headerOffset = 100
 
 	if len(pageData) < headerOffset+8 {
-		return nil, NewDatabaseError("read_cells", fmt.Errorf("page too small for page 1"), map[string]interface{}{
-			"page_size": len(pageData),
-		})
+		return nil, fmt.Errorf("page too small for page 1: have %d bytes, need at least %d",
+			len(pageData), headerOffset+8)
 	}
 
 	// Parse page header using a reader starting at the correct offset
 	headerReader := bytes.NewReader(pageData[headerOffset:])
 	pageHeader, err := db.parsePageHeader(headerReader)
 	if err != nil {
-		return nil, NewDatabaseError("parse_page_header", err, nil)
+		return nil, fmt.Errorf("parse page header: %w", err)
 	}
 
 	// Validate page type using the new helper method
 	if !pageHeader.IsLeafTable() {
-		return nil, NewDatabaseError("read_cells", fmt.Errorf("unexpected page type"), map[string]interface{}{
-			"expected": "0x0D (leaf table)",
-			"actual":   fmt.Sprintf("0x%02X", pageHeader.PageType),
-		})
+		return nil, fmt.Errorf("unexpected page type: expected 0x0D (leaf table), got 0x%02X",
+			pageHeader.PageType)
 	}
 
 	// Read cell pointer array using structured approach
 	cellPointers, err := db.readCellPointers(headerReader, int(pageHeader.CellCount))
 	if err != nil {
-		return nil, NewDatabaseError("read_cell_pointers", err, nil)
+		return nil, fmt.Errorf("read cell pointers: %w", err)
 	}
 
-	// Read cells in parallel - NOTE: cell offsets are relative to the start of the page (offset 0)
+	// Read cells in parallel with context - NOTE: cell offsets are relative to the start of the page (offset 0)
 	cells := make([]Cell, pageHeader.CellCount)
 	errors := make([]error, pageHeader.CellCount)
 	var wg sync.WaitGroup
@@ -172,12 +195,18 @@ func (db *DatabaseRawImpl) readCellsFromPage1(pageData []byte) ([]Cell, error) {
 		go func(index int, cellPointer CellPointer) {
 			defer wg.Done()
 
+			// Check context in goroutine
+			select {
+			case <-ctx.Done():
+				errors[index] = fmt.Errorf("cell read cancelled: %w", ctx.Err())
+				return
+			default:
+			}
+
 			cell, err := db.readCell(pageData, int(cellPointer.Offset()))
 			if err != nil {
-				errors[index] = NewDatabaseError("read_cell", err, map[string]interface{}{
-					"cell_index": index,
-					"offset":     cellPointer.Offset(),
-				})
+				errors[index] = fmt.Errorf("read cell %d at offset %d: %w",
+					index, cellPointer.Offset(), err)
 				return
 			}
 			cells[index] = *cell

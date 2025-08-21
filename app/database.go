@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"github.com/xwb1989/sqlparser"
@@ -14,9 +16,9 @@ type DatabaseImpl struct {
 	schemaLoaded bool             // flag to track if schema is loaded
 }
 
-// NewDatabase creates a new logical database instance
-func NewDatabase(filePath string) (*DatabaseImpl, error) {
-	dbRaw, err := NewDatabaseRaw(filePath)
+// NewDatabase creates a new logical database instance with functional options
+func NewDatabase(filePath string, options ...DatabaseOption) (*DatabaseImpl, error) {
+	dbRaw, err := NewDatabaseRaw(filePath, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -32,15 +34,15 @@ func NewDatabase(filePath string) (*DatabaseImpl, error) {
 }
 
 // GetSchema returns all schema records from the database
-func (db *DatabaseImpl) GetSchema() ([]SchemaRecord, error) {
+func (db *DatabaseImpl) GetSchema(ctx context.Context) ([]SchemaRecord, error) {
 	// Return cached schema if available
 	if db.schemaLoaded {
 		return db.schemas, nil
 	}
 
-	schemaCells, err := db.dbRaw.ReadSchemaTable()
+	schemaCells, err := db.dbRaw.ReadSchemaTable(ctx)
 	if err != nil {
-		return nil, NewDatabaseError("get_schema", err, nil)
+		return nil, fmt.Errorf("get schema: %w", err)
 	}
 
 	var schemas []SchemaRecord
@@ -59,18 +61,16 @@ func (db *DatabaseImpl) GetSchema() ([]SchemaRecord, error) {
 }
 
 // GetTable returns a table by name
-func (db *DatabaseImpl) GetTable(name string) (Table, error) {
+func (db *DatabaseImpl) GetTable(ctx context.Context, name string) (Table, error) {
 	// Check cache first
 	if table, exists := db.tables[name]; exists {
 		return table, nil
 	}
 
 	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema()
+	schemas, err := db.GetSchema(ctx)
 	if err != nil {
-		return nil, NewDatabaseError("read_schema", err, map[string]interface{}{
-			"table_name": name,
-		})
+		return nil, fmt.Errorf("read schema for table %s: %w", name, err)
 	}
 
 	// Find table in schema
@@ -88,17 +88,15 @@ func (db *DatabaseImpl) GetTable(name string) (Table, error) {
 		}
 	}
 
-	return nil, NewDatabaseError("get_table", ErrTableNotFound, map[string]interface{}{
-		"table_name": name,
-	})
+	return nil, fmt.Errorf("table not found: %s", name)
 }
 
 // GetTables returns a list of all table names
-func (db *DatabaseImpl) GetTables() ([]string, error) {
+func (db *DatabaseImpl) GetTables(ctx context.Context) ([]string, error) {
 	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema()
+	schemas, err := db.GetSchema(ctx)
 	if err != nil {
-		return nil, NewDatabaseError("get_tables", err, nil)
+		return nil, fmt.Errorf("get tables: %w", err)
 	}
 
 	var tables []string

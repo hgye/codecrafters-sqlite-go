@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // TableImpl implements TableInterface
 type TableImpl struct {
@@ -18,7 +21,7 @@ func NewTable(tableRaw TableRaw, schema *SchemaRecord) *TableImpl {
 }
 
 // GetSchema returns the column schema for the table
-func (t *TableImpl) GetSchema() ([]Column, error) {
+func (t *TableImpl) GetSchema(ctx context.Context) ([]Column, error) {
 	// Return cached columns if available
 	if len(t.columns) > 0 {
 		return t.columns, nil
@@ -27,10 +30,7 @@ func (t *TableImpl) GetSchema() ([]Column, error) {
 	// Parse schema from SQL
 	columns, err := parseTableSchema(t.schema.SQL)
 	if err != nil {
-		return nil, NewDatabaseError("get_table_schema", err, map[string]interface{}{
-			"table_name": t.schema.Name,
-			"schema_sql": t.schema.SQL,
-		})
+		return nil, fmt.Errorf("get table schema for %s: %w", t.schema.Name, err)
 	}
 
 	// Cache columns
@@ -39,22 +39,18 @@ func (t *TableImpl) GetSchema() ([]Column, error) {
 }
 
 // GetRows returns all rows from the table
-func (t *TableImpl) GetRows() ([]Row, error) {
-	cells, err := t.tableRaw.ReadAllCells()
+func (t *TableImpl) GetRows(ctx context.Context) ([]Row, error) {
+	cells, err := t.tableRaw.ReadAllCells(ctx)
 	if err != nil {
-		return nil, NewDatabaseError("get_table_rows", err, map[string]interface{}{
-			"table_name": t.schema.Name,
-		})
+		return nil, fmt.Errorf("get rows for table %s: %w", t.schema.Name, err)
 	}
 
 	rows := make([]Row, len(cells))
 	for i, cell := range cells {
 		row, err := t.cellToRow(cell)
 		if err != nil {
-			return nil, NewDatabaseError("convert_cell_to_row", err, map[string]interface{}{
-				"table_name": t.schema.Name,
-				"cell_index": i,
-			})
+			return nil, fmt.Errorf("convert cell %d to row for table %s: %w",
+				i, t.schema.Name, err)
 		}
 		rows[i] = *row
 	}
@@ -63,15 +59,15 @@ func (t *TableImpl) GetRows() ([]Row, error) {
 }
 
 // SelectColumns returns rows with only the specified columns
-func (t *TableImpl) SelectColumns(columns []string) ([]Row, error) {
+func (t *TableImpl) SelectColumns(ctx context.Context, columns []string) ([]Row, error) {
 	// Get all rows first
-	allRows, err := t.GetRows()
+	allRows, err := t.GetRows(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get column schema to map column names to indices
-	schema, err := t.GetSchema()
+	schema, err := t.GetSchema(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -115,8 +111,8 @@ func (t *TableImpl) SelectColumns(columns []string) ([]Row, error) {
 }
 
 // Filter returns rows that match the given condition
-func (t *TableImpl) Filter(condition func(Row) bool) ([]Row, error) {
-	allRows, err := t.GetRows()
+func (t *TableImpl) Filter(ctx context.Context, condition func(Row) bool) ([]Row, error) {
+	allRows, err := t.GetRows(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +128,10 @@ func (t *TableImpl) Filter(condition func(Row) bool) ([]Row, error) {
 }
 
 // Count returns the number of rows in the table
-func (t *TableImpl) Count() (int, error) {
-	cells, err := t.tableRaw.ReadAllCells()
+func (t *TableImpl) Count(ctx context.Context) (int, error) {
+	cells, err := t.tableRaw.ReadAllCells(ctx)
 	if err != nil {
-		return 0, NewDatabaseError("count_table_rows", err, map[string]interface{}{
-			"table_name": t.schema.Name,
-		})
+		return 0, fmt.Errorf("count rows for table %s: %w", t.schema.Name, err)
 	}
 
 	return len(cells), nil
