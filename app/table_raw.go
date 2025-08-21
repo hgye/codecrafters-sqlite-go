@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 )
 
 // TableRawImpl implements TableRawInterface for raw SQLite table operations
@@ -79,18 +80,38 @@ func (tr *TableRawImpl) readCellsFromPage(pageData []byte) ([]Cell, error) {
 		cellPointers[i] = CellPointer(binary.BigEndian.Uint16(pageData[offset : offset+2]))
 	}
 
-	// Read cells
+	// Read cells in parallel using goroutines
 	cells := make([]Cell, cellCount)
+	errors := make([]error, cellCount)
+	var wg sync.WaitGroup
+
+	// Launch a goroutine for each cell
 	for i, pointer := range cellPointers {
-		cell, err := tr.readCell(pageData, int(pointer.Offset()))
+		wg.Add(1)
+		go func(index int, cellPointer CellPointer) {
+			defer wg.Done()
+
+			cell, err := tr.readCell(pageData, int(cellPointer.Offset()))
+			if err != nil {
+				errors[index] = NewDatabaseError("read_table_cell", err, map[string]interface{}{
+					"table":      tr.name,
+					"cell_index": index,
+					"offset":     cellPointer.Offset(),
+				})
+				return
+			}
+			cells[index] = *cell
+		}(i, pointer)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Check for any errors
+	for _, err := range errors {
 		if err != nil {
-			return nil, NewDatabaseError("read_table_cell", err, map[string]interface{}{
-				"table":      tr.name,
-				"cell_index": i,
-				"offset":     pointer.Offset(),
-			})
+			return nil, err
 		}
-		cells[i] = *cell
 	}
 
 	return cells, nil

@@ -1,5 +1,7 @@
 package main
 
+import "fmt"
+
 // Logical layer interfaces - clean user-facing API
 
 // Database represents a logical database with high-level operations
@@ -78,40 +80,88 @@ type SchemaRecord struct {
 }
 
 // DatabaseHeader represents the 100-byte SQLite database file header
+// Fields are ordered and sized according to the SQLite specification
 type DatabaseHeader struct {
-	MagicNumber     [16]byte
-	PageSize        uint16
-	FileFormatWrite uint8
-	FileFormatRead  uint8
-	ReservedBytes   uint8
-	MaxPayload      uint8
-	MinPayload      uint8
-	LeafPayload     uint8
-	FileChangeCount uint32
-	DatabaseSize    uint32
-	FirstFreePage   uint32
-	FreePageCount   uint32
-	SchemaCookie    uint32
-	SchemaFormat    uint32
-	DefaultCache    uint32
-	LargestBTree    uint32
-	TextEncoding    uint32
-	UserVersion     uint32
-	IncrVacuum      uint32
-	AppID           uint32
-	Reserved        [20]byte
-	VersionValid    uint32
-	SQLiteVersion   uint32
+	MagicNumber     [16]byte // Offset 0: The magic number "SQLite format 3\000"
+	PageSize        uint16   // Offset 16: Database page size in bytes
+	FileFormatWrite uint8    // Offset 18: File format write version
+	FileFormatRead  uint8    // Offset 19: File format read version
+	ReservedBytes   uint8    // Offset 20: Bytes of unused "reserved" space at the end of each page
+	MaxPayload      uint8    // Offset 21: Maximum embedded payload fraction (must be 64)
+	MinPayload      uint8    // Offset 22: Minimum embedded payload fraction (must be 32)
+	LeafPayload     uint8    // Offset 23: Leaf payload fraction (must be 32)
+	FileChangeCount uint32   // Offset 24: File change counter
+	DatabaseSize    uint32   // Offset 28: Size of the database file in pages
+	FirstFreePage   uint32   // Offset 32: Page number of the first freelist trunk page
+	FreePageCount   uint32   // Offset 36: Total number of freelist pages
+	SchemaCookie    uint32   // Offset 40: The schema cookie
+	SchemaFormat    uint32   // Offset 44: The schema format number (1, 2, 3, or 4)
+	DefaultCache    uint32   // Offset 48: Default page cache size
+	LargestBTree    uint32   // Offset 52: Page number of the largest root b-tree page when in auto-vacuum or incremental-vacuum modes
+	TextEncoding    uint32   // Offset 56: Database text encoding (1=UTF-8, 2=UTF-16le, 3=UTF-16be)
+	UserVersion     uint32   // Offset 60: The user version as set by PRAGMA user_version
+	IncrVacuum      uint32   // Offset 64: True (non-zero) for incremental-vacuum mode. False (zero) otherwise.
+	AppID           uint32   // Offset 68: The application ID set by PRAGMA application_id
+	Reserved        [20]byte // Offset 72: Reserved for expansion. Must be zero.
+	VersionValid    uint32   // Offset 92: The version-valid-for number
+	SQLiteVersion   uint32   // Offset 96: SQLITE_VERSION_NUMBER
+}
+
+// String returns a human-readable representation of the database header
+func (dh *DatabaseHeader) String() string {
+	return fmt.Sprintf("SQLite Database Header: PageSize=%d, TextEncoding=%d, SchemaFormat=%d, DatabaseSize=%d pages",
+		dh.PageSize, dh.TextEncoding, dh.SchemaFormat, dh.DatabaseSize)
+}
+
+// GetActualPageSize returns the actual page size, handling the special case where 1 means 65536
+func (dh *DatabaseHeader) GetActualPageSize() int {
+	if dh.PageSize == 1 {
+		return 65536
+	}
+	return int(dh.PageSize)
+}
+
+// IsValidMagicNumber checks if the magic number is valid
+func (dh *DatabaseHeader) IsValidMagicNumber() bool {
+	expected := [16]byte{'S', 'Q', 'L', 'i', 't', 'e', ' ', 'f', 'o', 'r', 'm', 'a', 't', ' ', '3', 0}
+	return dh.MagicNumber == expected
 }
 
 // PageHeader represents a B-tree page header
+// The exact structure depends on the page type, but this covers leaf table b-tree pages
 type PageHeader struct {
-	PageType         uint8
-	FirstFreeblock   uint16
-	CellCount        uint16
-	CellContentStart uint16
-	FragmentedBytes  uint8
-	// RightmostPointer uint32 // Only for interior pages
+	PageType         uint8  // Offset 0: Page type (0x0d for leaf table b-tree page)
+	FirstFreeblock   uint16 // Offset 1: Byte offset of the first freeblock, or 0 if there are no freeblocks
+	CellCount        uint16 // Offset 3: Number of cells on this page
+	CellContentStart uint16 // Offset 5: Start of cell content area, or 0 if the page contains no cells
+	FragmentedBytes  uint8  // Offset 7: Number of fragmented free bytes within the cell content area
+	// RightmostPointer uint32 // Only for interior pages (not included for leaf pages)
+}
+
+// String returns a human-readable representation of the page header
+func (ph *PageHeader) String() string {
+	return fmt.Sprintf("Page Header: Type=0x%02X, CellCount=%d, CellContentStart=%d",
+		ph.PageType, ph.CellCount, ph.CellContentStart)
+}
+
+// IsLeafTable checks if this is a leaf table b-tree page
+func (ph *PageHeader) IsLeafTable() bool {
+	return ph.PageType == 0x0D
+}
+
+// IsInteriorTable checks if this is an interior table b-tree page
+func (ph *PageHeader) IsInteriorTable() bool {
+	return ph.PageType == 0x05
+}
+
+// IsLeafIndex checks if this is a leaf index b-tree page
+func (ph *PageHeader) IsLeafIndex() bool {
+	return ph.PageType == 0x0A
+}
+
+// IsInteriorIndex checks if this is an interior index b-tree page
+func (ph *PageHeader) IsInteriorIndex() bool {
+	return ph.PageType == 0x02
 }
 
 // CellPointer represents a pointer to a cell within a page
@@ -144,6 +194,42 @@ const (
 )
 
 // Utility functions for SQLite data parsing
+
+// VarintReader provides structured varint reading capabilities
+type VarintReader struct {
+	data   []byte
+	offset int
+}
+
+// NewVarintReader creates a new VarintReader
+func NewVarintReader(data []byte) *VarintReader {
+	return &VarintReader{data: data, offset: 0}
+}
+
+// ReadVarint reads a variable-length integer and advances the internal offset
+func (vr *VarintReader) ReadVarint() (uint64, error) {
+	if vr.offset >= len(vr.data) {
+		return 0, fmt.Errorf("varint reader: offset %d exceeds data length %d", vr.offset, len(vr.data))
+	}
+
+	value, bytesRead := readVarint(vr.data, vr.offset)
+	if bytesRead == 0 {
+		return 0, fmt.Errorf("varint reader: invalid varint at offset %d", vr.offset)
+	}
+
+	vr.offset += bytesRead
+	return value, nil
+}
+
+// Offset returns the current offset
+func (vr *VarintReader) Offset() int {
+	return vr.offset
+}
+
+// Remaining returns the number of bytes remaining
+func (vr *VarintReader) Remaining() int {
+	return len(vr.data) - vr.offset
+}
 
 // readVarint reads a variable-length integer from the data
 func readVarint(data []byte, offset int) (value uint64, bytesRead int) {
@@ -194,51 +280,60 @@ func getSerialTypeSize(serialType uint8) int {
 	}
 }
 
-// readRecordHeader reads and parses a record header from payload data
+// readRecordHeader reads and parses a record header using structured approach
 func readRecordHeader(data []byte, offset int) (RecordHeader, int) {
 	var header RecordHeader
-	var bytesRead int
-	header.HeaderSize, bytesRead = readVarint(data, offset)
-	offset += bytesRead
+	reader := NewVarintReader(data[offset:])
+
+	// Read header size
+	headerSize, err := reader.ReadVarint()
+	if err != nil {
+		return header, offset // Return error case gracefully
+	}
+	header.HeaderSize = headerSize
 
 	if header.HeaderSize == 0 {
-		return header, offset // No header
+		return header, offset + reader.Offset() // No header
 	}
 
 	// Calculate how many serial types we need to read
 	headerEnd := int(header.HeaderSize)
-	for offset < headerEnd {
-		var serialType uint64
-		serialType, bytesRead = readVarint(data, offset)
+	originalOffset := reader.Offset()
+
+	for reader.Offset() < headerEnd && originalOffset < headerEnd {
+		serialType, err := reader.ReadVarint()
+		if err != nil {
+			break // Error reading serial type
+		}
 		header.SerialTypes = append(header.SerialTypes, uint8(serialType))
-		offset += bytesRead
 	}
 
-	return header, offset
+	return header, offset + reader.Offset()
 }
 
-// readRecordBody reads and parses a record body from payload data
+// readRecordBody reads and parses a record body using structured approach
 func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, int, error) {
 	var body RecordBody
 	body.Values = make([]interface{}, len(header.SerialTypes))
 
+	currentOffset := offset
 	for i, serialType := range header.SerialTypes {
 		size := getSerialTypeSize(serialType)
 		if size == 0 {
 			body.Values[i] = nil // NULL value
 			continue
 		}
-		if offset+size > len(data) {
-			return body, offset, NewDatabaseError("read_record_body", ErrInvalidDatabase, map[string]interface{}{
-				"needed_bytes": offset + size,
+		if currentOffset+size > len(data) {
+			return body, currentOffset, NewDatabaseError("read_record_body", ErrInvalidDatabase, map[string]interface{}{
+				"needed_bytes": currentOffset + size,
 				"have_bytes":   len(data),
 			})
 		}
-		value := data[offset : offset+size]
+		value := data[currentOffset : currentOffset+size]
 		body.Values[i] = value // Store raw bytes for now
-		offset += size
+		currentOffset += size
 	}
-	return body, offset, nil
+	return body, currentOffset, nil
 }
 
 // ParseAsSchema parses the record body as a schema table record
