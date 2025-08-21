@@ -149,26 +149,23 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 	}
 
 	// Test complete parsing flow
-	db, err := NewSQLiteDB(dbPath)
+	db, err := NewDatabase(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
 
 	// Test schema parsing
-	schema := db.GetSchema()
+	schema, err := db.GetSchema()
+	if err != nil {
+		t.Fatalf("Failed to get schema: %v", err)
+	}
 	if len(schema) == 0 {
 		t.Fatal("No schema objects found")
 	}
 
 	// Parse each schema object
-	for _, cell := range schema {
-		schemaRecord := cell.Record.RecordBody.ParseAsSchema()
-		if schemaRecord == nil {
-			t.Errorf("Failed to parse schema record")
-			continue
-		}
-
+	for _, schemaRecord := range schema {
 		// Validate schema record fields
 		if schemaRecord.Type == "" {
 			t.Errorf("Schema record missing type")
@@ -176,36 +173,24 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 		if schemaRecord.Name == "" {
 			t.Errorf("Schema record missing name")
 		}
-
-		// Test that the union field is set
-		if cell.Record.RecordBody.Schema == nil {
-			t.Errorf("Union field Schema not set after parsing")
-		}
-
-		// Test IsSchemaRecord
-		if !cell.Record.RecordBody.IsSchemaRecord() {
-			t.Errorf("IsSchemaRecord() should return true for schema records")
-		}
 	}
 
 	// Test table creation from schema
-	tables := db.GetTables()
-	for _, table := range tables {
-		if table.Name == "" {
+	tables, err := db.GetTables()
+	if err != nil {
+		t.Fatalf("Failed to get tables: %v", err)
+	}
+	for _, tableName := range tables {
+		if tableName == "" {
 			t.Errorf("Table missing name")
-		}
-		if table.RootPage <= 0 {
-			t.Errorf("Table should have valid root page")
-		}
-
-		// Test Table.String() method
-		if table.String() != table.Name {
-			t.Errorf("Table.String() = %v, want %v", table.String(), table.Name)
 		}
 	}
 
 	// Test schema objects include all types
-	objects := db.GetSchemaObjects()
+	objects, err := db.GetSchema()
+	if err != nil {
+		t.Fatalf("Failed to get schema: %v", err)
+	}
 	typesSeen := make(map[string]bool)
 	for _, obj := range objects {
 		typesSeen[obj.Type] = true
