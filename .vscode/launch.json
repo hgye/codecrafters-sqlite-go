@@ -14,7 +14,7 @@
             "args": [
                 "superheroes.db",
                 // ".dbinfo"
-                "SELECT name FROM superheroes;"
+                "SELECT name FROM superheroes where eye_color = 'Pink Eyes';"
             ]
         }
     ]
