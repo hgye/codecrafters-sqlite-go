@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -32,7 +33,13 @@ func (tr *TableRawImpl) ReadAllCells(ctx context.Context) ([]Cell, error) {
 			tr.rootPage, tr.name, err)
 	}
 
-	return tr.readCellsFromPage(ctx, pageData)
+	// Parse page header first
+	pageHeader, err := tr.parsePageHeader(pageData)
+	if err != nil {
+		return nil, fmt.Errorf("parse page header for table %s: %w", tr.name, err)
+	}
+
+	return tr.readCellsFromPage(ctx, pageHeader, pageData)
 }
 
 // GetRootPage returns the root page number
@@ -45,8 +52,25 @@ func (tr *TableRawImpl) GetName() string {
 	return tr.name
 }
 
+// parsePageHeader parses a page header from page data
+func (tr *TableRawImpl) parsePageHeader(pageData []byte) (*PageHeader, error) {
+	if len(pageData) < 8 {
+		return nil, fmt.Errorf("page data too small for header: have %d bytes, need at least 8", len(pageData))
+	}
+
+	// For table pages, header starts at offset 0 (unlike database page 1 which has db header first)
+	headerReader := bytes.NewReader(pageData[:8])
+
+	header := &PageHeader{}
+	if err := binary.Read(headerReader, binary.BigEndian, header); err != nil {
+		return nil, fmt.Errorf("failed to read page header: %w", err)
+	}
+
+	return header, nil
+}
+
 // readCellsFromPage reads all cells from a page with context support
-func (tr *TableRawImpl) readCellsFromPage(ctx context.Context, pageData []byte) ([]Cell, error) {
+func (tr *TableRawImpl) readCellsFromPage(ctx context.Context, pageHeader *PageHeader, pageData []byte) ([]Cell, error) {
 	// Check context before starting work
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("read cells cancelled: %w", err)
@@ -57,15 +81,21 @@ func (tr *TableRawImpl) readCellsFromPage(ctx context.Context, pageData []byte) 
 			tr.name, len(pageData))
 	}
 
-	// Parse page header
-	pageType := pageData[0]
-	if pageType != 0x0D { // Leaf table b-tree page
-		return nil, fmt.Errorf("unexpected page type for table %s: expected 0x0D (leaf table), got 0x%02X",
-			tr.name, pageType)
+	// Handle different page types
+	if pageHeader.IsLeafTable() {
+		return tr.readCellsFromLeafPage(ctx, pageHeader, pageData)
+	} else if pageHeader.IsInteriorTable() {
+		return tr.readCellsFromInteriorPage(ctx, pageHeader, pageData)
+	} else {
+		return nil, fmt.Errorf("unexpected page type for table %s: expected leaf or interior table, got 0x%02X",
+			tr.name, pageHeader.PageType)
 	}
+}
 
-	// Read cell count (bytes 3-4)
-	cellCount := binary.BigEndian.Uint16(pageData[3:5])
+// readCellsFromLeafPage reads all cells from a leaf table page
+func (tr *TableRawImpl) readCellsFromLeafPage(ctx context.Context, pageHeader *PageHeader, pageData []byte) ([]Cell, error) {
+	// Use parsed header fields
+	cellCount := pageHeader.CellCount
 
 	// Read cell pointer array (starts at byte 8)
 	cellPointers := make([]CellPointer, cellCount)
@@ -165,4 +195,99 @@ func (tr *TableRawImpl) parseRecord(payload []byte) (*Record, error) {
 		RecordHeader: header,
 		RecordBody:   body,
 	}, nil
+}
+
+// readCellsFromInteriorPage reads all cells from an interior table page by traversing child pages
+func (tr *TableRawImpl) readCellsFromInteriorPage(ctx context.Context, pageHeader *PageHeader, pageData []byte) ([]Cell, error) {
+	// Check context before starting work
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read interior cells cancelled: %w", err)
+	}
+
+	if len(pageData) < 12 { // Interior pages have additional rightmost pointer (4 bytes)
+		return nil, fmt.Errorf("page too small for interior table %s: have %d bytes, need at least 12",
+			tr.name, len(pageData))
+	}
+
+	// Use parsed header fields
+	cellCount := pageHeader.CellCount
+
+	// Read rightmost child pointer (bytes 8-11 for interior pages)
+	rightmostChild := binary.BigEndian.Uint32(pageData[8:12])
+
+	// Read cell pointer array (starts at byte 12 for interior pages)
+	cellPointers := make([]CellPointer, cellCount)
+	for i := uint16(0); i < cellCount; i++ {
+		offset := 12 + i*2
+		if int(offset+1) >= len(pageData) {
+			return nil, fmt.Errorf("cell pointer array overflow for table %s at offset %d",
+				tr.name, offset)
+		}
+		cellPointers[i] = CellPointer(binary.BigEndian.Uint16(pageData[offset : offset+2]))
+	}
+
+	// For interior pages, we need to traverse child pages to collect actual cells
+	// Each interior cell contains a child page number and a key
+	var allCells []Cell
+
+	// First, process all child pages referenced by interior cells
+	for _, pointer := range cellPointers {
+		// Read the interior cell to get child page number
+		childPageNum, err := tr.readInteriorCellChildPage(pageData, int(pointer.Offset()))
+		if err != nil {
+			return nil, fmt.Errorf("read interior cell child page for table %s: %w", tr.name, err)
+		}
+
+		// Recursively read cells from child page
+		childCells, err := tr.readCellsFromChildPage(ctx, int(childPageNum))
+		if err != nil {
+			return nil, fmt.Errorf("read cells from child page %d for table %s: %w", childPageNum, tr.name, err)
+		}
+
+		allCells = append(allCells, childCells...)
+	}
+
+	// Finally, process the rightmost child page
+	rightmostCells, err := tr.readCellsFromChildPage(ctx, int(rightmostChild))
+	if err != nil {
+		return nil, fmt.Errorf("read cells from rightmost child page %d for table %s: %w", rightmostChild, tr.name, err)
+	}
+
+	allCells = append(allCells, rightmostCells...)
+
+	return allCells, nil
+}
+
+// readInteriorCellChildPage reads the child page number from an interior table cell
+func (tr *TableRawImpl) readInteriorCellChildPage(pageData []byte, offset int) (uint32, error) {
+	if offset+4 > len(pageData) {
+		return 0, fmt.Errorf("interior cell offset %d exceeds page size %d", offset, len(pageData))
+	}
+
+	// Interior table cell format: 4-byte child page number + varint key
+	childPageNum := binary.BigEndian.Uint32(pageData[offset : offset+4])
+	return childPageNum, nil
+}
+
+// readCellsFromChildPage recursively reads cells from a child page
+func (tr *TableRawImpl) readCellsFromChildPage(ctx context.Context, pageNum int) ([]Cell, error) {
+	// Check context before recursive call
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read child page cancelled: %w", err)
+	}
+
+	// Read the child page
+	pageData, err := tr.dbRaw.ReadPage(ctx, pageNum)
+	if err != nil {
+		return nil, fmt.Errorf("read child page %d for table %s: %w", pageNum, tr.name, err)
+	}
+
+	// Parse child page header
+	childPageHeader, err := tr.parsePageHeader(pageData)
+	if err != nil {
+		return nil, fmt.Errorf("parse child page header for page %d: %w", pageNum, err)
+	}
+
+	// Recursively process the child page
+	return tr.readCellsFromPage(ctx, childPageHeader, pageData)
 }

@@ -148,7 +148,7 @@ func (t *TableImpl) cellToRow(cell Cell) (*Row, error) {
 
 	for i, rawValue := range cell.Record.RecordBody.Values {
 		// Get the serial type for this value from the record header
-		var serialType uint8 = 0 // Default to NULL
+		var serialType uint64 = 0 // Default to NULL
 		if i < len(cell.Record.RecordHeader.SerialTypes) {
 			serialType = cell.Record.RecordHeader.SerialTypes[i]
 		}

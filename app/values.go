@@ -34,12 +34,12 @@ const (
 
 // SQLiteValue implements the Value interface
 type SQLiteValue struct {
-	serialType uint8
+	serialType uint64
 	data       []byte
 }
 
 // NewSQLiteValue creates a new SQLite value from serial type and data
-func NewSQLiteValue(serialType uint8, data []byte) *SQLiteValue {
+func NewSQLiteValue(serialType uint64, data []byte) *SQLiteValue {
 	return &SQLiteValue{
 		serialType: serialType,
 		data:       data,

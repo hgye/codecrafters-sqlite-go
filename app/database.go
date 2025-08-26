@@ -166,8 +166,16 @@ func parseTableSchema(schemaSQL string) ([]Column, error) {
 
 // normalizeSQLiteToMySQL converts SQLite-specific syntax to MySQL syntax for sqlparser
 func normalizeSQLiteToMySQL(sql string) string {
+	// Fix SQLite quoted identifiers - replace double quotes with nothing
+	// SQLite uses double quotes, MySQL sqlparser doesn't like them for table names
+	normalized := strings.ReplaceAll(sql, `"`, "")
+
 	// Fix MySQL syntax: "primary key autoincrement" should be "AUTO_INCREMENT PRIMARY KEY"
-	normalized := strings.ReplaceAll(sql, "primary key autoincrement", "AUTO_INCREMENT PRIMARY KEY")
+	normalized = strings.ReplaceAll(normalized, "primary key autoincrement", "AUTO_INCREMENT PRIMARY KEY")
 	normalized = strings.ReplaceAll(normalized, "PRIMARY KEY AUTOINCREMENT", "AUTO_INCREMENT PRIMARY KEY")
+
+	// Trim leading/trailing whitespace
+	normalized = strings.TrimSpace(normalized)
+
 	return normalized
 }

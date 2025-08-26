@@ -218,8 +218,8 @@ type Record struct {
 
 // RecordHeader represents the header of a record in the payload
 type RecordHeader struct {
-	HeaderSize  uint64  // varint: total bytes in header including this varint
-	SerialTypes []uint8 // serial types: one per column, determines datatype
+	HeaderSize  uint64   // varint: total bytes in header including this varint
+	SerialTypes []uint64 // serial types: one per column, determines datatype (can be large varints)
 }
 
 // RecordBody represents the body/data portion of a record
@@ -412,7 +412,7 @@ func readVarint(data []byte, offset int) (value uint64, bytesRead int) {
 }
 
 // getSerialTypeSize returns the size in bytes for a given serial type
-func getSerialTypeSize(serialType uint8) int {
+func getSerialTypeSize(serialType uint64) int {
 	switch serialType {
 	case 0, 8, 9:
 		return 0
@@ -465,7 +465,7 @@ func readRecordHeader(data []byte, offset int) (RecordHeader, int) {
 		if err != nil {
 			break // Error reading serial type
 		}
-		header.SerialTypes = append(header.SerialTypes, uint8(serialType))
+		header.SerialTypes = append(header.SerialTypes, serialType)
 	}
 
 	return header, offset + reader.Offset()
