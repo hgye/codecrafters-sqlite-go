@@ -55,15 +55,15 @@ func (engine *SqliteEngine) handleDBInfo() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// TODO: Add GetPageSize() and GetTableCount() to Database interface
-	// For now, provide placeholder values
-	fmt.Printf("database page size: %v\n", 4096)
+	// Get the actual page size from the database header
+	pageSize := engine.db.GetPageSize()
+	fmt.Printf("database page size: %v\n", pageSize)
 
 	tables, err := engine.db.GetTables(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("number of tables: %v\n", len(tables))
+	fmt.Printf("number of tables: %v\n", len(tables)-1) // sqlite_schema table should not be counted
 	return nil
 }
 

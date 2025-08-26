@@ -13,6 +13,7 @@ type Database interface {
 	SchemaReader
 	TableProvider
 	io.Closer
+	GetPageSize() int
 }
 
 // SchemaReader provides schema reading capabilities

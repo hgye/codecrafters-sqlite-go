@@ -116,6 +116,11 @@ func (db *DatabaseImpl) Close() error {
 	return db.dbRaw.Close()
 }
 
+// GetPageSize returns the database page size
+func (db *DatabaseImpl) GetPageSize() int {
+	return db.dbRaw.GetPageSize()
+}
+
 // ClearCache clears all cached data (tables and schema)
 func (db *DatabaseImpl) ClearCache() {
 	db.tables = make(map[string]Table)
