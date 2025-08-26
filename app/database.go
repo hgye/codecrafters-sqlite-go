@@ -145,43 +145,12 @@ func parseTableSchema(schemaSQL string) ([]Column, error) {
 			})
 		}
 
-		// Check if the table has an autoincrement primary key (implicit rowid) or explicit ID column
-		hasImplicitRowid := false
-		for _, col := range parsedStmt.TableSpec.Columns {
-			// Check for INTEGER PRIMARY KEY AUTOINCREMENT - this is implicit (uses SQLite rowid)
-			if col.Type.Autoincrement && strings.ToUpper(col.Type.Type) == "INTEGER" {
-				// This is an implicit rowid column - SQLite will use the actual rowid
-				hasImplicitRowid = true
-				break
-			}
-		}
-
-		var columns []Column
-		var startIndex int
-
-		if !hasImplicitRowid {
-			// Add the implicit 'id' column (synthetic auto-increment) only if there's no implicit rowid
-			// This covers tables that don't have INTEGER PRIMARY KEY AUTOINCREMENT
-			columns = make([]Column, len(parsedStmt.TableSpec.Columns)+1)
-			columns[0] = Column{
-				Name:     "id",
-				Type:     "integer",
-				Index:    0,
-				Nullable: false, // synthetic id is never null
-			}
-			startIndex = 1
-		} else {
-			// Table has INTEGER PRIMARY KEY AUTOINCREMENT - it will use actual SQLite rowid
-			columns = make([]Column, len(parsedStmt.TableSpec.Columns))
-			startIndex = 0
-		}
-
-		// Add the original columns
+		columns := make([]Column, len(parsedStmt.TableSpec.Columns))
 		for i, col := range parsedStmt.TableSpec.Columns {
-			columns[startIndex+i] = Column{
+			columns[i] = Column{
 				Name:     col.Name.String(),
 				Type:     col.Type.Type,
-				Index:    startIndex + i,
+				Index:    i,
 				Nullable: true, // Default assumption
 			}
 		}

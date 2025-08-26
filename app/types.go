@@ -80,7 +80,7 @@ type TableRaw interface {
 
 // CellReader provides cell reading capabilities
 type CellReader interface {
-	ReadAllCells(ctx context.Context) ([]CellWithPosition, error)
+	ReadAllCells(ctx context.Context) ([]Cell, error)
 }
 
 // Configuration and Options
@@ -208,14 +208,6 @@ type Cell struct {
 	Rowid       uint64 // varint: integer key (rowid)
 	Record      Record // parsed record from payload
 	// OverflowPage uint32 // 4-byte page number for overflow (if needed)
-}
-
-// CellWithPosition represents a cell with its position in the cell pointer array
-type CellWithPosition struct {
-	Cell
-	Position   int    // Position in the cell pointer array (0-based, will be converted to 1-based id)
-	PageNumber int    // Page number where this cell resides (for multi-page tables)
-	StartRowId uint64 // Starting row ID for this page (for interior pages)
 }
 
 // Record represents a record within a cell
