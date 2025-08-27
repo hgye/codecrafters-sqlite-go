@@ -144,41 +144,80 @@ func (t *TableImpl) GetName() string {
 
 // cellToRow converts a cell to a row
 func (t *TableImpl) cellToRow(cell Cell) (*Row, error) {
-	values := make([]Value, len(cell.Record.RecordBody.Values))
+	// Get the table schema to understand column structure
+	columns, err := t.GetSchema(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("get schema for cellToRow: %w", err)
+	}
 
-	for i, rawValue := range cell.Record.RecordBody.Values {
-		// Get the serial type for this value from the record header
-		var serialType uint64 = 0 // Default to NULL
+	// Find the auto-increment primary key column position if it exists
+	var autoincrementColumnIndex = -1
+	for i, col := range columns {
+		if col.IsPrimaryKey && col.IsAutoIncrement {
+			autoincrementColumnIndex = i
+			break
+		}
+	}
+
+	// Create values array with the same length as the schema columns
+	values := make([]Value, len(columns))
+	recordBodyIndex := 0 // Index for reading from actual stored values (skips serial type 0)
+
+	for i := 0; i < len(columns); i++ {
+		// Get the serial type for this column from the header
+		var serialType uint64 = 0
 		if i < len(cell.Record.RecordHeader.SerialTypes) {
 			serialType = cell.Record.RecordHeader.SerialTypes[i]
 		}
 
-		// Create SQLiteValue based on the raw data and serial type
-		var data []byte
-		if rawValue != nil {
-			if bytes, ok := rawValue.([]byte); ok {
-				data = bytes
+		if serialType == 0 && i == autoincrementColumnIndex {
+			// This is the auto-increment primary key column with no stored data - use the rowid from cell
+			rowidString := fmt.Sprintf("%d", cell.Rowid)
+			textSerialType := uint64(13 + 2*len(rowidString)) // Text serial type
+			rowidValue := NewSQLiteValue(textSerialType, []byte(rowidString))
+			values[i] = rowidValue
+			// Don't increment recordBodyIndex since no data was consumed from record body
+		} else if serialType == 0 {
+			// This is a NULL column (not auto-increment)
+			values[i] = NewSQLiteValue(0, nil)
+			// Don't increment recordBodyIndex since no data was consumed from record body
+		} else {
+			// This column has data stored in record body - read it
+			if recordBodyIndex < len(cell.Record.RecordBody.Values) {
+				rawValue := cell.Record.RecordBody.Values[recordBodyIndex]
+
+				var data []byte
+				if rawValue != nil {
+					if bytes, ok := rawValue.([]byte); ok {
+						data = bytes
+					} else {
+						data = []byte(fmt.Sprintf("%v", rawValue))
+					}
+				}
+
+				values[i] = NewSQLiteValue(serialType, data)
+				recordBodyIndex++ // Only increment when we actually consume data from record body
 			} else {
-				// Convert other types to bytes if needed
-				data = []byte(fmt.Sprintf("%v", rawValue))
+				// No more data in record - set to NULL
+				values[i] = NewSQLiteValue(0, nil)
 			}
 		}
-
-		values[i] = NewSQLiteValue(serialType, data)
 	}
 
 	return &Row{
 		Values: values,
 	}, nil
-} // isPrintableText checks if bytes represent printable text
-func isPrintableText(data []byte) bool {
-	for _, b := range data {
-		if b < 32 && b != 9 && b != 10 && b != 13 { // Allow tab, newline, carriage return
-			return false
-		}
-		if b > 126 {
-			return false
-		}
-	}
-	return true
 }
+
+// isPrintableText checks if bytes represent printable text
+// func isPrintableText(data []byte) bool {
+// 	for _, b := range data {
+// 		if b < 32 && b != 9 && b != 10 && b != 13 { // Allow tab, newline, carriage return
+// 			return false
+// 		}
+// 		if b > 126 {
+// 			return false
+// 		}
+// 	}
+// 	return true
+// }

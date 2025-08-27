@@ -146,6 +146,7 @@ func (engine *SqliteEngine) handleSelect(stmt *sqlparser.Select) error {
 	} else if hasCountFunc {
 		return engine.handleCount(tableName, stmt.Where)
 	} else if len(columnNames) > 0 {
+		// fmt.Println("++", strings.Join(columnNames, "|"))
 		return engine.handleSelectColumns(tableName, columnNames, stmt.Where)
 	}
 

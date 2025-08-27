@@ -184,10 +184,12 @@ func float64FromBits(b uint64) float64 {
 
 // Column represents a database column
 type Column struct {
-	Name     string
-	Type     string
-	Index    int
-	Nullable bool
+	Name            string
+	Type            string
+	Index           int
+	Nullable        bool
+	IsPrimaryKey    bool // true if this is a PRIMARY KEY column
+	IsAutoIncrement bool // true if this is an AUTOINCREMENT column
 }
 
 // Row represents a database row

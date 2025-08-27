@@ -12,9 +12,9 @@
             "program": "${workspaceFolder}/app",
             "cwd": "${workspaceFolder}",
             "args": [
-                "superheroes.db",
+                "sample.db",
                 // ".dbinfo"
-                "SELECT name FROM superheroes;"
+                "SELECT name FROM apples;"
             ]
         }
     ]

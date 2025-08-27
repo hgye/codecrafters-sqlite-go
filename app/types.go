@@ -475,13 +475,14 @@ func readRecordHeader(data []byte, offset int) (RecordHeader, int) {
 // readRecordBody reads and parses a record body using structured approach
 func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, int, error) {
 	var body RecordBody
-	body.Values = make([]interface{}, len(header.SerialTypes))
+	// Only create entries for serial types that actually store data (size > 0)
+	var actualValues []interface{}
 
 	currentOffset := offset
-	for i, serialType := range header.SerialTypes {
+	for _, serialType := range header.SerialTypes {
 		size := getSerialTypeSize(serialType)
 		if size == 0 {
-			body.Values[i] = nil // NULL value
+			// Serial type 0 means NULL/no data stored - skip entirely
 			continue
 		}
 		if currentOffset+size > len(data) {
@@ -491,9 +492,11 @@ func readRecordBody(data []byte, offset int, header RecordHeader) (RecordBody, i
 			})
 		}
 		value := data[currentOffset : currentOffset+size]
-		body.Values[i] = value // Store raw bytes for now
+		actualValues = append(actualValues, value) // Store raw bytes for now
 		currentOffset += size
 	}
+
+	body.Values = actualValues
 	return body, currentOffset, nil
 }
 

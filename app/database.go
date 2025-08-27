@@ -150,14 +150,26 @@ func parseTableSchema(schemaSQL string) ([]Column, error) {
 			})
 		}
 
+		// Parse columns and detect PRIMARY KEY and AUTOINCREMENT
 		columns := make([]Column, len(parsedStmt.TableSpec.Columns))
+
 		for i, col := range parsedStmt.TableSpec.Columns {
+			isAutoIncrement := bool(col.Type.Autoincrement)
+			isIntegerPrimaryKey := isAutoIncrement && strings.ToUpper(col.Type.Type) == "INTEGER"
+
 			columns[i] = Column{
-				Name:     col.Name.String(),
-				Type:     col.Type.Type,
-				Index:    i,
-				Nullable: true, // Default assumption
+				Name:            col.Name.String(),
+				Type:            col.Type.Type,
+				Index:           i,
+				Nullable:        true,                // Default assumption
+				IsPrimaryKey:    isIntegerPrimaryKey, // In SQLite, INTEGER PRIMARY KEY AUTOINCREMENT is the primary key
+				IsAutoIncrement: isAutoIncrement,
 			}
+
+			// Primary key columns are not nullable
+			// if isIntegerPrimaryKey {
+			// 	columns[i].Nullable = false
+			// }
 		}
 
 		return columns, nil
