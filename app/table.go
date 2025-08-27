@@ -142,71 +142,108 @@ func (t *TableImpl) GetName() string {
 	return t.schema.Name
 }
 
-// cellToRow converts a cell to a row
+// cellToRow converts a SQLite cell to a logical row
+//
+// SQLite Record Format:
+// - Record Header: Contains serial types for each column in schema order (serial type 0 = NULL or not stored)
+// - Record Body: Contains actual data values in order (only for columns with serial type != 0)
+// - INTEGER PRIMARY KEY AUTOINCREMENT columns typically have serial type 0 (use rowid instead)
 func (t *TableImpl) cellToRow(cell Cell) (*Row, error) {
-	// Get the table schema to understand column structure
 	columns, err := t.GetSchema(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("get schema for cellToRow: %w", err)
 	}
 
-	// Find the auto-increment primary key column position if it exists
-	var autoincrementColumnIndex = -1
-	for i, col := range columns {
-		if col.IsPrimaryKey && col.IsAutoIncrement {
-			autoincrementColumnIndex = i
-			break
-		}
-	}
-
-	// Create values array with the same length as the schema columns
+	autoincrementColumnIndex := t.findAutoIncrementColumnIndex(columns)
 	values := make([]Value, len(columns))
-	recordBodyIndex := 0 // Index for reading from actual stored values (skips serial type 0)
+
+	processor := &columnProcessor{
+		cell:                     cell,
+		recordBodyIndex:          0,
+		autoincrementColumnIndex: autoincrementColumnIndex,
+	}
 
 	for i := 0; i < len(columns); i++ {
-		// Get the serial type for this column from the header
-		var serialType uint64 = 0
-		if i < len(cell.Record.RecordHeader.SerialTypes) {
-			serialType = cell.Record.RecordHeader.SerialTypes[i]
-		}
-
-		if serialType == 0 && i == autoincrementColumnIndex {
-			// This is the auto-increment primary key column with no stored data - use the rowid from cell
-			rowidString := fmt.Sprintf("%d", cell.Rowid)
-			textSerialType := uint64(13 + 2*len(rowidString)) // Text serial type
-			rowidValue := NewSQLiteValue(textSerialType, []byte(rowidString))
-			values[i] = rowidValue
-			// Don't increment recordBodyIndex since no data was consumed from record body
-		} else if serialType == 0 {
-			// This is a NULL column (not auto-increment)
-			values[i] = NewSQLiteValue(0, nil)
-			// Don't increment recordBodyIndex since no data was consumed from record body
-		} else {
-			// This column has data stored in record body - read it
-			if recordBodyIndex < len(cell.Record.RecordBody.Values) {
-				rawValue := cell.Record.RecordBody.Values[recordBodyIndex]
-
-				var data []byte
-				if rawValue != nil {
-					if bytes, ok := rawValue.([]byte); ok {
-						data = bytes
-					} else {
-						data = []byte(fmt.Sprintf("%v", rawValue))
-					}
-				}
-
-				values[i] = NewSQLiteValue(serialType, data)
-				recordBodyIndex++ // Only increment when we actually consume data from record body
-			} else {
-				// No more data in record - set to NULL
-				values[i] = NewSQLiteValue(0, nil)
-			}
-		}
+		serialType := processor.getSerialType(i)
+		values[i] = processor.processColumn(i, serialType)
 	}
 
-	return &Row{
-		Values: values,
-	}, nil
+	return &Row{Values: values}, nil
+}
+
+// findAutoIncrementColumnIndex finds the index of the auto-increment primary key column
+func (t *TableImpl) findAutoIncrementColumnIndex(columns []Column) int {
+	for i, col := range columns {
+		if col.IsPrimaryKey && col.IsAutoIncrement {
+			return i
+		}
+	}
+	return -1
+}
+
+// columnProcessor handles the processing of individual columns during row conversion
+type columnProcessor struct {
+	cell                     Cell
+	recordBodyIndex          int
+	autoincrementColumnIndex int
+}
+
+// getSerialType returns the serial type for the given column index
+func (cp *columnProcessor) getSerialType(columnIndex int) uint64 {
+	if columnIndex < len(cp.cell.Record.RecordHeader.SerialTypes) {
+		return cp.cell.Record.RecordHeader.SerialTypes[columnIndex]
+	}
+	return 0
+}
+
+// processColumn processes a single column and returns its value
+func (cp *columnProcessor) processColumn(columnIndex int, serialType uint64) Value {
+	switch {
+	case serialType == 0 && columnIndex == cp.autoincrementColumnIndex:
+		return cp.handleAutoIncrementColumn()
+	case serialType == 0:
+		return cp.handleNullColumn()
+	default:
+		return cp.handleRegularColumn(serialType)
+	}
+}
+
+// handleAutoIncrementColumn creates a value from the cell's rowid for auto-increment columns
+func (cp *columnProcessor) handleAutoIncrementColumn() Value {
+	rowidString := fmt.Sprintf("%d", cp.cell.Rowid)
+	textSerialType := uint64(13 + 2*len(rowidString)) // Text serial type formula
+	return NewSQLiteValue(textSerialType, []byte(rowidString))
+}
+
+// handleNullColumn creates a NULL value for columns with no stored data
+func (cp *columnProcessor) handleNullColumn() Value {
+	return NewSQLiteValue(0, nil)
+}
+
+// handleRegularColumn reads and creates a value from the record body for regular columns
+func (cp *columnProcessor) handleRegularColumn(serialType uint64) Value {
+	if cp.recordBodyIndex >= len(cp.cell.Record.RecordBody.Values) {
+		return NewSQLiteValue(0, nil) // No more data available
+	}
+
+	rawValue := cp.cell.Record.RecordBody.Values[cp.recordBodyIndex]
+	cp.recordBodyIndex++ // Consume data from record body
+
+	data := cp.convertToBytes(rawValue)
+	return NewSQLiteValue(serialType, data)
+}
+
+// convertToBytes converts raw value to byte slice for storage
+func (cp *columnProcessor) convertToBytes(rawValue interface{}) []byte {
+	if rawValue == nil {
+		return nil
+	}
+
+	if bytes, ok := rawValue.([]byte); ok {
+		return bytes
+	}
+
+	return []byte(fmt.Sprintf("%v", rawValue))
 }
 
 // isPrintableText checks if bytes represent printable text
