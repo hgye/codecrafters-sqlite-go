@@ -86,9 +86,52 @@ func (db *DatabaseImpl) GetTable(ctx context.Context, name string) (Table, error
 			db.tables[name] = table
 			return table, nil
 		}
+
 	}
 
 	return nil, fmt.Errorf("table not found: %s", name)
+}
+
+// GetIndex returns an index by name
+func (db *DatabaseImpl) GetIndex(ctx context.Context, name string) (Index, error) {
+	// Get schema records (this will use cache if available)
+	schemas, err := db.GetSchema(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read schema for index %s: %w", name, err)
+	}
+
+	// Find index in schema
+	for _, schema := range schemas {
+		if schema.Type == "index" && schema.Name == name {
+			// Create raw index
+			indexRaw := NewIndexRaw(db.dbRaw, schema.Name, int(schema.RootPage), &schema)
+
+			// Create logical index
+			index := NewIndex(indexRaw, &schema)
+
+			return index, nil
+		}
+	}
+
+	return nil, fmt.Errorf("index not found: %s", name)
+}
+
+// GetIndices returns a list of all index names
+func (db *DatabaseImpl) GetIndices(ctx context.Context) ([]string, error) {
+	// Get schema records (this will use cache if available)
+	schemas, err := db.GetSchema(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get indices: %w", err)
+	}
+
+	var indices []string
+	for _, schema := range schemas {
+		if schema.Type == "index" {
+			indices = append(indices, schema.Name)
+		}
+	}
+
+	return indices, nil
 }
 
 // GetTables returns a list of all table names

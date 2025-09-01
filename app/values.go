@@ -197,6 +197,12 @@ type Row struct {
 	Values []Value
 }
 
+// IndexEntry represents an entry in an index
+type IndexEntry struct {
+	Keys  []Value // The indexed column values
+	Rowid int64   // The rowid of the indexed row
+}
+
 // Get returns the value for a specific column
 func (r *Row) Get(columnIndex int) (Value, error) {
 	if columnIndex < 0 || columnIndex >= len(r.Values) {

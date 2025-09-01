@@ -43,6 +43,8 @@ func (engine *SqliteEngine) ExecuteCommand(command, args string) error {
 		return engine.handleDBInfo()
 	case ".tables":
 		return engine.handleTables()
+	case ".indexes":
+		return engine.handleIndexes()
 	case "sql":
 		return engine.handleSQL(args)
 	default:
@@ -78,6 +80,23 @@ func (engine *SqliteEngine) handleTables() error {
 	}
 	for _, tableName := range tableNames {
 		fmt.Printf("%s ", tableName)
+	}
+	fmt.Println()
+	return nil
+}
+
+// handleIndexes handles the .indexes command
+func (engine *SqliteEngine) handleIndexes() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	indexNames, err := engine.db.GetIndices(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, indexName := range indexNames {
+		fmt.Printf("%s ", indexName)
 	}
 	fmt.Println()
 	return nil

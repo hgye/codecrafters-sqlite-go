@@ -12,6 +12,7 @@ import (
 type Database interface {
 	SchemaReader
 	TableProvider
+	IndexProvider
 	io.Closer
 	GetPageSize() int
 }
@@ -27,11 +28,24 @@ type TableProvider interface {
 	GetTable(ctx context.Context, name string) (Table, error)
 }
 
+// IndexProvider provides index access capabilities
+type IndexProvider interface {
+	GetIndex(ctx context.Context, name string) (Index, error)
+	GetIndices(ctx context.Context) ([]string, error)
+}
+
 // Table represents a logical table with user-friendly operations
 type Table interface {
 	SchemaProvider
 	DataReader
 	DataFilter
+	GetName() string
+}
+
+// Index represents a logical index with user-friendly operations
+type Index interface {
+	SchemaProvider
+	DataReader
 	GetName() string
 }
 
@@ -77,6 +91,16 @@ type TableRaw interface {
 	CellReader
 	GetRootPage() int
 	GetName() string
+}
+
+// IndexRaw handles raw index data access from SQLite format
+type IndexRaw interface {
+	CellReader
+	GetRootPage() int
+	GetName() string
+	// Index-specific methods
+	SearchKeys(ctx context.Context, key interface{}) ([]IndexEntry, error)
+	GetIndexedColumns() []string
 }
 
 // CellReader provides cell reading capabilities
