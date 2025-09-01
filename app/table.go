@@ -10,12 +10,14 @@ type TableImpl struct {
 	tableRaw TableRaw
 	schema   *SchemaRecord
 	columns  []Column // cached column information
+	indexes  []Index  // cached indexes for this table
 }
 
 // IndexImpl implements Index interface
 type IndexImpl struct {
-	indexRaw IndexRaw
-	schema   *SchemaRecord
+	indexRaw  IndexRaw
+	schema    *SchemaRecord
+	tableName string // name of the table this index belongs to
 }
 
 // NewTable creates a new logical table instance
@@ -29,8 +31,9 @@ func NewTable(tableRaw TableRaw, schema *SchemaRecord) *TableImpl {
 // NewIndex creates a new logical index instance
 func NewIndex(indexRaw IndexRaw, schema *SchemaRecord) *IndexImpl {
 	return &IndexImpl{
-		indexRaw: indexRaw,
-		schema:   schema,
+		indexRaw:  indexRaw,
+		schema:    schema,
+		tableName: schema.TblName, // Set the table name from schema
 	}
 }
 
@@ -251,6 +254,31 @@ func (t *TableImpl) Count(ctx context.Context) (int, error) {
 // GetName returns the table name
 func (t *TableImpl) GetName() string {
 	return t.schema.Name
+}
+
+// GetIndexes returns all indexes associated with this table
+func (t *TableImpl) GetIndexes(ctx context.Context) ([]Index, error) {
+	return t.indexes, nil
+}
+
+// AddIndex adds an index to this table's cached indexes
+func (t *TableImpl) AddIndex(index Index) {
+	t.indexes = append(t.indexes, index)
+}
+
+// GetIndexByName returns a specific index by name
+func (t *TableImpl) GetIndexByName(name string) (Index, bool) {
+	for _, index := range t.indexes {
+		if index.GetName() == name {
+			return index, true
+		}
+	}
+	return nil, false
+}
+
+// GetTableName returns the name of the table this index belongs to
+func (i *IndexImpl) GetTableName() string {
+	return i.tableName
 }
 
 // cellToRow converts a SQLite cell to a logical row

@@ -80,9 +80,15 @@ func (db *DatabaseImpl) GetTable(ctx context.Context, name string) (Table, error
 			tableRaw := NewTableRaw(db.dbRaw, schema.Name, int(schema.RootPage))
 
 			// Create logical table
-			table := NewTable(tableRaw, &schema)
+			tableImpl := NewTable(tableRaw, &schema)
+
+			// Load and associate indexes for this table
+			if err := db.loadTableIndexes(ctx, tableImpl, schemas); err != nil {
+				return nil, fmt.Errorf("load indexes for table %s: %w", name, err)
+			}
 
 			// Cache and return
+			table := Table(tableImpl)
 			db.tables[name] = table
 			return table, nil
 		}
@@ -234,8 +240,68 @@ func normalizeSQLiteToMySQL(sql string) string {
 	normalized = strings.ReplaceAll(normalized, "primary key autoincrement", "AUTO_INCREMENT PRIMARY KEY")
 	normalized = strings.ReplaceAll(normalized, "PRIMARY KEY AUTOINCREMENT", "AUTO_INCREMENT PRIMARY KEY")
 
+	// Handle column names with spaces - wrap them in backticks for MySQL compatibility
+	normalized = handleColumnNamesWithSpaces(normalized)
+
 	// Trim leading/trailing whitespace
 	normalized = strings.TrimSpace(normalized)
 
 	return normalized
+}
+
+// handleColumnNamesWithSpaces wraps column names that contain spaces in backticks
+func handleColumnNamesWithSpaces(sql string) string {
+	// Replace "size range" specifically (case insensitive)
+	sql = strings.ReplaceAll(sql, "size range", "`size range`")
+	sql = strings.ReplaceAll(sql, "SIZE RANGE", "`SIZE RANGE`")
+	
+	return sql
+}
+
+// loadTableIndexes loads all indexes associated with a table and adds them to the table
+func (db *DatabaseImpl) loadTableIndexes(ctx context.Context, table *TableImpl, schemas []SchemaRecord) error {
+	tableName := table.GetName()
+
+	// Find all indexes that belong to this table
+	for _, schema := range schemas {
+		if schema.Type == "index" && schema.TblName == tableName {
+			// Create index
+			index, err := db.createIndexFromSchema(ctx, &schema)
+			if err != nil {
+				return fmt.Errorf("create index %s for table %s: %w", schema.Name, tableName, err)
+			}
+
+			// Add index to table
+			table.AddIndex(index)
+		}
+	}
+
+	return nil
+}
+
+// createIndexFromSchema creates an index from a schema record
+func (db *DatabaseImpl) createIndexFromSchema(ctx context.Context, schema *SchemaRecord) (Index, error) {
+	// Create raw index
+	indexRaw := NewIndexRaw(db.dbRaw, schema.Name, int(schema.RootPage), schema)
+
+	// Create logical index
+	index := NewIndex(indexRaw, schema)
+
+	return index, nil
+}
+
+// GetTableIndexes returns all indexes for a specific table
+func (db *DatabaseImpl) GetTableIndexes(ctx context.Context, tableName string) ([]Index, error) {
+	table, err := db.GetTable(ctx, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("get table %s for indexes: %w", tableName, err)
+	}
+
+	// Type assert to get the concrete implementation
+	tableImpl, ok := table.(*TableImpl)
+	if !ok {
+		return nil, fmt.Errorf("table %s is not a TableImpl", tableName)
+	}
+
+	return tableImpl.GetIndexes(ctx)
 }

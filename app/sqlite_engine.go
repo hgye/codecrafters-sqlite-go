@@ -45,6 +45,8 @@ func (engine *SqliteEngine) ExecuteCommand(command, args string) error {
 		return engine.handleTables()
 	case ".indexes":
 		return engine.handleIndexes()
+	case ".schema":
+		return engine.handleSchema()
 	case "sql":
 		return engine.handleSQL(args)
 	default:
@@ -99,6 +101,45 @@ func (engine *SqliteEngine) handleIndexes() error {
 		fmt.Printf("%s ", indexName)
 	}
 	fmt.Println()
+	return nil
+}
+
+// handleSchema handles the .schema command - shows table-index relationships
+func (engine *SqliteEngine) handleSchema() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get all tables
+	tableNames, err := engine.db.GetTables(ctx)
+	if err != nil {
+		return fmt.Errorf("get tables: %w", err)
+	}
+
+	fmt.Println("Tables and their indexes:")
+	for _, tableName := range tableNames {
+		if tableName == "sqlite_master" || tableName == "sqlite_sequence" {
+			continue // Skip system tables
+		}
+
+		fmt.Printf("\nTable: %s\n", tableName)
+
+		// Get indexes for this table
+		indexes, err := engine.db.GetTableIndexes(ctx, tableName)
+		if err != nil {
+			fmt.Printf("  Error getting indexes: %v\n", err)
+			continue
+		}
+
+		if len(indexes) == 0 {
+			fmt.Println("  No indexes")
+		} else {
+			fmt.Println("  Indexes:")
+			for _, index := range indexes {
+				fmt.Printf("    - %s\n", index.GetName())
+			}
+		}
+	}
+
 	return nil
 }
 

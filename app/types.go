@@ -32,6 +32,7 @@ type TableProvider interface {
 type IndexProvider interface {
 	GetIndex(ctx context.Context, name string) (Index, error)
 	GetIndices(ctx context.Context) ([]string, error)
+	GetTableIndexes(ctx context.Context, tableName string) ([]Index, error)
 }
 
 // Table represents a logical table with user-friendly operations
@@ -40,6 +41,8 @@ type Table interface {
 	DataReader
 	DataFilter
 	GetName() string
+	GetIndexes(ctx context.Context) ([]Index, error)
+	GetIndexByName(name string) (Index, bool)
 }
 
 // Index represents a logical index with user-friendly operations
@@ -47,6 +50,7 @@ type Index interface {
 	SchemaProvider
 	DataReader
 	GetName() string
+	GetTableName() string
 }
 
 // SchemaProvider provides schema information
