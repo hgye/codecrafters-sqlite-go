@@ -52,6 +52,24 @@ func (tr *TableRawImpl) GetName() string {
 	return tr.name
 }
 
+// ReadCellByRowid reads a specific cell by rowid
+func (tr *TableRawImpl) ReadCellByRowid(ctx context.Context, targetRowid int64) (*Cell, error) {
+	// For simplicity, we'll read all cells and find the one with matching rowid
+	// This could be optimized with B-tree traversal in the future
+	allCells, err := tr.ReadAllCells(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read cells to find rowid %d: %w", targetRowid, err)
+	}
+
+	for _, cell := range allCells {
+		if int64(cell.Rowid) == targetRowid {
+			return &cell, nil
+		}
+	}
+
+	return nil, fmt.Errorf("rowid %d not found in table %s", targetRowid, tr.name)
+}
+
 // parsePageHeader parses a page header from page data
 func (tr *TableRawImpl) parsePageHeader(pageData []byte) (*PageHeader, error) {
 	if len(pageData) < 8 {

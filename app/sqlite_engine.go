@@ -200,7 +200,16 @@ func (engine *SqliteEngine) handleSelect(stmt *sqlparser.Select) error {
 		}
 	}
 
-	// Handle different cases with WHERE clause support
+	// Try to optimize the query using indexes
+	optimizer := NewQueryOptimizer(engine.db)
+	plan, err := optimizer.OptimizeSelect(stmt)
+	if err == nil && plan.UseIndex {
+		// Use optimized query execution
+		// fmt.Printf("++Using index: %s\n", plan.IndexName)
+		return engine.handleOptimizedSelect(stmt, plan, hasStarExpr, hasCountFunc, columnNames)
+	}
+
+	// Fall back to original query execution
 	if hasStarExpr {
 		return engine.handleSelectAll(tableName, stmt.Where)
 	} else if hasCountFunc {
@@ -535,4 +544,92 @@ func (engine *SqliteEngine) extractTableName(stmt *sqlparser.Select) string {
 		}
 	}
 	return ""
+}
+
+// handleOptimizedSelect handles SELECT statements using query optimization
+func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *QueryPlan, hasStarExpr, hasCountFunc bool, columnNames []string) error {
+	// Create optimizer and execute plan
+	optimizer := NewQueryOptimizer(engine.db)
+	optimizedRows, err := optimizer.ExecutePlan(plan, stmt)
+	if err != nil {
+		return fmt.Errorf("error executing optimized query: %v", err)
+	}
+
+	ctx := context.Background()
+	// Get table for schema information
+	table, err := engine.db.GetTable(ctx, plan.TableName)
+	if err != nil {
+		return err
+	}
+
+	schema, err := table.GetSchema(ctx)
+	if err != nil {
+		return err
+	}
+
+	if hasCountFunc {
+		// Return count of optimized results
+		count := len(optimizedRows)
+		formatted := engine.formatter.FormatCount(count)
+		fmt.Println(formatted)
+		return nil
+	}
+
+	// Convert optimized rows to the format expected by the formatter
+	var rowPointers []*Row
+	for i := range optimizedRows {
+		rowPointers = append(rowPointers, &optimizedRows[i])
+	}
+
+	// Convert schema to pointer format for compatibility
+	var schemaPointers []*Column
+	for i := range schema {
+		schemaPointers = append(schemaPointers, &schema[i])
+	}
+
+	if hasStarExpr {
+		// Select all columns - use existing formatter
+		for _, row := range rowPointers {
+			output := engine.formatter.FormatRow(row, schemaPointers)
+			fmt.Println(output)
+		}
+	} else {
+		// Select specific columns - manually extract values like in handleSelectColumns
+		// Create a map for quick column index lookup
+		columnIndexMap := make(map[string]int)
+		for _, col := range schema {
+			columnIndexMap[strings.ToLower(col.Name)] = col.Index
+		}
+
+		// Get column indices
+		columnIndices := make([]int, len(columnNames))
+		for i, columnName := range columnNames {
+			if index, exists := columnIndexMap[strings.ToLower(columnName)]; exists {
+				columnIndices[i] = index
+			} else {
+				return fmt.Errorf("column '%s' not found in table '%s'", columnName, plan.TableName)
+			}
+		}
+
+		// Output the selected columns for each row
+		for _, row := range rowPointers {
+			rowValues := make([]string, len(columnIndices))
+			for i, colIndex := range columnIndices {
+				value, err := row.Get(colIndex)
+				if err != nil {
+					return fmt.Errorf("error getting value for column index %d: %v", colIndex, err)
+				}
+				rowValues[i] = engine.formatter.FormatValue(value)
+			}
+
+			// For single column, print one per line; for multiple columns, print tab-separated
+			if len(rowValues) == 1 {
+				fmt.Fprintf(os.Stdout, "%s\n", rowValues[0])
+			} else {
+				fmt.Fprintf(os.Stdout, "%s\n", strings.Join(rowValues, "|"))
+			}
+		}
+	}
+
+	return nil
 }

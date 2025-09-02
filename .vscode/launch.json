@@ -12,9 +12,9 @@
             "program": "${workspaceFolder}/app",
             "cwd": "${workspaceFolder}",
             "args": [
-                "sample.db",
+                "companies.db",
                 // ".dbinfo"
-                "SELECT name FROM apples;"
+                "SELECT name FROM companies WHERE country = 'eritrea'"
             ]
         }
     ]

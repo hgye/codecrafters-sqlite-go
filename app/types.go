@@ -43,6 +43,7 @@ type Table interface {
 	GetName() string
 	GetIndexes(ctx context.Context) ([]Index, error)
 	GetIndexByName(name string) (Index, bool)
+	GetRowByRowid(ctx context.Context, rowid int64) (*Row, error)
 }
 
 // Index represents a logical index with user-friendly operations
@@ -51,6 +52,7 @@ type Index interface {
 	DataReader
 	GetName() string
 	GetTableName() string
+	SearchByKey(ctx context.Context, key interface{}) ([]IndexEntry, error)
 }
 
 // SchemaProvider provides schema information
@@ -95,6 +97,7 @@ type TableRaw interface {
 	CellReader
 	GetRootPage() int
 	GetName() string
+	ReadCellByRowid(ctx context.Context, rowid int64) (*Cell, error)
 }
 
 // IndexRaw handles raw index data access from SQLite format
