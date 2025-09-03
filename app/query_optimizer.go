@@ -155,6 +155,7 @@ func (qo *QueryOptimizer) executeIndexQuery(table Table, plan *QueryPlan, select
 		return qo.executeFullTableScan(table, selectQuery, ctx)
 	}
 
+
 	// If no entries found, return empty result
 	if len(indexEntries) == 0 {
 		return []Row{}, nil
