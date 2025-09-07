@@ -225,3 +225,40 @@ func (r *Row) GetByName(columnName string, schema []*Column) (Value, error) {
 		"column_name": columnName,
 	})
 }
+
+// Shared utility functions for B-tree operations
+
+// BTreeCellToCell converts a BTreeCell to a regular Cell
+func BTreeCellToCell(btreeCell BTreeCell) Cell {
+	return Cell{
+		PayloadSize: 0, // Not needed for logical operations
+		Rowid:       btreeCell.Rowid,
+		Record:      btreeCell.Record,
+	}
+}
+
+// BytesToInteger converts a byte array to uint64 integer
+func BytesToInteger(data []byte) uint64 {
+	if data == nil || len(data) == 0 {
+		return 0
+	}
+	
+	var result uint64
+	for _, b := range data {
+		result = (result << 8) | uint64(b)
+	}
+	return result
+}
+
+// ConvertToBytes converts a raw value to byte slice for storage
+func ConvertToBytes(rawValue interface{}) []byte {
+	if rawValue == nil {
+		return nil
+	}
+
+	if bytes, ok := rawValue.([]byte); ok {
+		return bytes
+	}
+
+	return []byte(fmt.Sprintf("%v", rawValue))
+}

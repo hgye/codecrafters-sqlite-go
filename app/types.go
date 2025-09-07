@@ -10,26 +10,21 @@ import (
 
 // Database represents a logical database with high-level operations
 type Database interface {
-	SchemaReader
-	TableProvider
-	IndexProvider
+	DatabaseProvider
 	io.Closer
 	GetPageSize() int
 }
 
-// SchemaReader provides schema reading capabilities
-type SchemaReader interface {
+// DatabaseProvider consolidates schema, table and index access
+type DatabaseProvider interface {
+	// Schema operations
 	GetSchema(ctx context.Context) ([]SchemaRecord, error)
 	GetTables(ctx context.Context) ([]string, error)
-}
-
-// TableProvider provides table access capabilities
-type TableProvider interface {
+	
+	// Table operations
 	GetTable(ctx context.Context, name string) (Table, error)
-}
-
-// IndexProvider provides index access capabilities
-type IndexProvider interface {
+	
+	// Index operations
 	GetIndex(ctx context.Context, name string) (Index, error)
 	GetIndices(ctx context.Context) ([]string, error)
 	GetTableIndexes(ctx context.Context, tableName string) ([]Index, error)
@@ -37,9 +32,7 @@ type IndexProvider interface {
 
 // Table represents a logical table with user-friendly operations
 type Table interface {
-	SchemaProvider
-	DataReader
-	DataFilter
+	DataOperations
 	GetName() string
 	GetIndexes(ctx context.Context) ([]Index, error)
 	GetIndexByName(name string) (Index, bool)
@@ -48,26 +41,23 @@ type Table interface {
 
 // Index represents a logical index with user-friendly operations
 type Index interface {
-	SchemaProvider
-	DataReader
+	GetSchema(ctx context.Context) ([]Column, error)
+	Count(ctx context.Context) (int, error)
 	GetName() string
 	GetTableName() string
 	SearchByKey(ctx context.Context, key interface{}) ([]IndexEntry, error)
 }
 
-// SchemaProvider provides schema information
-type SchemaProvider interface {
+// DataOperations consolidates all data access operations for tables
+type DataOperations interface {
+	// Schema operations
 	GetSchema(ctx context.Context) ([]Column, error)
-}
-
-// DataReader provides data reading capabilities
-type DataReader interface {
+	
+	// Data reading operations
 	GetRows(ctx context.Context) ([]Row, error)
 	Count(ctx context.Context) (int, error)
-}
-
-// DataFilter provides data filtering capabilities
-type DataFilter interface {
+	
+	// Data filtering operations
 	SelectColumns(ctx context.Context, columns []string) ([]Row, error)
 	Filter(ctx context.Context, condition func(Row) bool) ([]Row, error)
 }
@@ -76,19 +66,14 @@ type DataFilter interface {
 
 // DatabaseRaw handles raw SQLite file I/O operations
 type DatabaseRaw interface {
-	PageReader
-	SchemaTableReader
+	RawDataAccess
 	io.Closer
 }
 
-// PageReader provides page reading capabilities
-type PageReader interface {
+// RawDataAccess consolidates raw data access operations
+type RawDataAccess interface {
 	ReadPage(ctx context.Context, pageNum int) ([]byte, error)
 	GetPageSize() int
-}
-
-// SchemaTableReader provides schema table reading capabilities
-type SchemaTableReader interface {
 	ReadSchemaTable(ctx context.Context) ([]Cell, error)
 }
 
@@ -115,121 +100,6 @@ type CellReader interface {
 	ReadAllCells(ctx context.Context) ([]Cell, error)
 }
 
-// Configuration and Options
-
-// DatabaseConfig holds database configuration options
-type DatabaseConfig struct {
-	PageCacheSize   int
-	MaxConcurrency  int
-	ReadTimeout     int // milliseconds
-	ValidationMode  ValidationLevel
-	EnableProfiling bool
-}
-
-// ValidationLevel defines validation strictness
-type ValidationLevel int
-
-const (
-	ValidationNone ValidationLevel = iota
-	ValidationBasic
-	ValidationStrict
-)
-
-// DatabaseOption represents a functional option for database configuration
-type DatabaseOption func(*DatabaseConfig)
-
-// WithPageCacheSize sets the page cache size
-func WithPageCacheSize(size int) DatabaseOption {
-	return func(cfg *DatabaseConfig) {
-		cfg.PageCacheSize = size
-	}
-}
-
-// WithMaxConcurrency sets the maximum number of concurrent operations
-func WithMaxConcurrency(max int) DatabaseOption {
-	return func(cfg *DatabaseConfig) {
-		cfg.MaxConcurrency = max
-	}
-}
-
-// WithReadTimeout sets the read timeout in milliseconds
-func WithReadTimeout(timeout int) DatabaseOption {
-	return func(cfg *DatabaseConfig) {
-		cfg.ReadTimeout = timeout
-	}
-}
-
-// WithValidation sets the validation level
-func WithValidation(level ValidationLevel) DatabaseOption {
-	return func(cfg *DatabaseConfig) {
-		cfg.ValidationMode = level
-	}
-}
-
-// WithProfiling enables or disables profiling
-func WithProfiling(enabled bool) DatabaseOption {
-	return func(cfg *DatabaseConfig) {
-		cfg.EnableProfiling = enabled
-	}
-}
-
-// DefaultDatabaseConfig returns the default configuration
-func DefaultDatabaseConfig() *DatabaseConfig {
-	return &DatabaseConfig{
-		PageCacheSize:   100,
-		MaxConcurrency:  10,
-		ReadTimeout:     5000, // 5 seconds
-		ValidationMode:  ValidationBasic,
-		EnableProfiling: false,
-	}
-}
-
-// Resource Management
-
-// ResourceManager handles cleanup of multiple resources
-type ResourceManager struct {
-	resources []io.Closer
-	cleaners  []func() error
-}
-
-// NewResourceManager creates a new resource manager
-func NewResourceManager() *ResourceManager {
-	return &ResourceManager{
-		resources: make([]io.Closer, 0),
-		cleaners:  make([]func() error, 0),
-	}
-}
-
-// Add adds a closeable resource to be managed
-func (rm *ResourceManager) Add(resource io.Closer) {
-	rm.resources = append(rm.resources, resource)
-}
-
-// AddCleaner adds a custom cleanup function
-func (rm *ResourceManager) AddCleaner(cleaner func() error) {
-	rm.cleaners = append(rm.cleaners, cleaner)
-}
-
-// Close closes all managed resources in reverse order (LIFO)
-func (rm *ResourceManager) Close() error {
-	var lastErr error
-
-	// Run custom cleaners first (LIFO)
-	for i := len(rm.cleaners) - 1; i >= 0; i-- {
-		if err := rm.cleaners[i](); err != nil {
-			lastErr = err
-		}
-	}
-
-	// Close resources (LIFO)
-	for i := len(rm.resources) - 1; i >= 0; i-- {
-		if err := rm.resources[i].Close(); err != nil {
-			lastErr = err
-		}
-	}
-
-	return lastErr
-}
 
 // Physical data structures from SQLite format
 
@@ -267,7 +137,7 @@ type SchemaRecord struct {
 	Type     string // "table", "index", "view", "trigger"
 	Name     string // object name
 	TblName  string // table name (for indexes, this is the table they belong to)
-	RootPage uint8  // root page number in the database file (single byte)
+	RootPage uint32 // root page number in the database file (can be large in big DBs)
 	SQL      string // CREATE statement for this object
 }
 
@@ -499,7 +369,6 @@ func readRecordHeader(data []byte, offset int) (RecordHeader, int) {
 		}
 		header.SerialTypes = append(header.SerialTypes, serialType)
 	}
-
 	return header, offset + reader.Offset()
 }
 
@@ -553,7 +422,15 @@ func (rb *RecordBody) ParseAsSchema() *SchemaRecord {
 		// Parse rootpage as integer from bytes
 		rootPageBytes := rb.Values[3].([]byte)
 		if len(rootPageBytes) > 0 {
-			schema.RootPage = rootPageBytes[0] // Single byte for root page
+			// Convert bytes to uint32 (big-endian)
+			var rootPage uint32
+			for i, b := range rootPageBytes {
+				if i >= 4 { // Limit to 4 bytes for uint32
+					break
+				}
+				rootPage = (rootPage << 8) | uint32(b)
+			}
+			schema.RootPage = rootPage
 		}
 	}
 	if rb.Values[4] != nil {

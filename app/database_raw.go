@@ -71,8 +71,9 @@ func (db *DatabaseRawImpl) ReadPage(ctx context.Context, pageNum int) ([]byte, e
 		return nil, fmt.Errorf("read page context error: %w", err)
 	}
 
-	// Offset start at (pageNum-1) * pageSize
+	// SQLite pages are 1-indexed, so page 1 is at offset 0
 	offset := int64(pageNum-1) * int64(db.pageSize)
+	// fmt.Printf("DEBUG: ReadPage(%d) - pageSize=%d, offset=0x%x\n", pageNum, db.pageSize, offset)
 
 	pageData := make([]byte, db.pageSize)
 	n, err := db.file.ReadAt(pageData, offset)
