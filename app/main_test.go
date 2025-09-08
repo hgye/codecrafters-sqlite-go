@@ -158,7 +158,7 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 
 	// Test schema parsing
 	ctx := context.Background()
-	schema, err := db.GetSchema(ctx)
+	schema, err := db.LoadSchema(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get schema: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSQLiteParsingIntegration(t *testing.T) {
 	}
 
 	// Test schema objects include all types
-	objects, err := db.GetSchema(ctx)
+	objects, err := db.LoadSchema(ctx)
 	if err != nil {
 		t.Fatalf("Failed to get schema: %v", err)
 	}

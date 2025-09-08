@@ -81,7 +81,9 @@ func (engine *SqliteEngine) handleTables() error {
 		return err
 	}
 	for _, tableName := range tableNames {
-		fmt.Printf("%s ", tableName)
+		if tableName != "sqlite_master" {
+			fmt.Printf("%s ", tableName)
+		}
 	}
 	fmt.Println()
 	return nil
@@ -145,14 +147,14 @@ func (engine *SqliteEngine) handleSchema() error {
 
 // handleSQL handles SQL commands
 func (engine *SqliteEngine) handleSQL(sqlArgs string) error {
-// 	sqlStart := time.Now()
+	// 	sqlStart := time.Now()
 	// fmt.Printf("[TIMING] Starting SQL execution\n")
-	
-// 	parseStart := time.Now()
+
+	// 	parseStart := time.Now()
 	stmt, err := sqlparser.Parse(sqlArgs)
-// 	parseDuration := time.Since(parseStart)
+	// 	parseDuration := time.Since(parseStart)
 	// fmt.Printf("[TIMING] SQL parsing took: %v\n", parseDuration)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to parse SQL: %v", err)
 	}
@@ -160,7 +162,7 @@ func (engine *SqliteEngine) handleSQL(sqlArgs string) error {
 	switch parsedStmt := stmt.(type) {
 	case *sqlparser.Select:
 		err := engine.handleSelect(parsedStmt)
-// 		sqlDuration := time.Since(sqlStart)
+		// 		sqlDuration := time.Since(sqlStart)
 		// fmt.Printf("[TIMING] Total SQL execution took: %v\n", sqlDuration)
 		return err
 	case *sqlparser.Insert:
@@ -176,9 +178,9 @@ func (engine *SqliteEngine) handleSQL(sqlArgs string) error {
 
 // handleSelect handles SELECT statements
 func (engine *SqliteEngine) handleSelect(stmt *sqlparser.Select) error {
-// 	selectStart := time.Now()
+	// 	selectStart := time.Now()
 	// fmt.Printf("[TIMING] Starting SELECT statement processing\n")
-	
+
 	tableName := engine.extractTableName(stmt)
 	if tableName == "" {
 		return fmt.Errorf("could not extract table name from SELECT statement")
@@ -214,15 +216,15 @@ func (engine *SqliteEngine) handleSelect(stmt *sqlparser.Select) error {
 	}
 
 	// Try to optimize the query using indexes
-// 	optimizeStart := time.Now()
+	// 	optimizeStart := time.Now()
 	optimizer := NewQueryOptimizer(engine.db)
 	plan, err := optimizer.OptimizeSelect(stmt)
-// 	optimizeDuration := time.Since(optimizeStart)
+	// 	optimizeDuration := time.Since(optimizeStart)
 	// fmt.Printf("[TIMING] Query optimization took: %v\n", optimizeDuration)
-	
+
 	if err == nil && plan.UseIndex {
 		// Use optimized query execution
-// 		selectDuration := time.Since(selectStart)
+		// 		selectDuration := time.Since(selectStart)
 		// fmt.Printf("[TIMING] Total SELECT preparation took: %v\n", selectDuration)
 		return engine.handleOptimizedSelect(stmt, plan, hasStarExpr, hasCountFunc, columnNames)
 	}
@@ -566,20 +568,20 @@ func (engine *SqliteEngine) extractTableName(stmt *sqlparser.Select) string {
 
 // handleOptimizedSelect handles SELECT statements using query optimization
 func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *QueryPlan, hasStarExpr, hasCountFunc bool, columnNames []string) error {
-// 	totalStart := time.Now()
+	// 	totalStart := time.Now()
 	// fmt.Printf("[TIMING] Starting optimized select execution\n")
-	
+
 	// Create optimizer and execute plan
-// 	planStart := time.Now()
+	// 	planStart := time.Now()
 	optimizer := NewQueryOptimizer(engine.db)
 	optimizedRows, err := optimizer.ExecutePlan(plan, stmt)
-// 	planDuration := time.Since(planStart)
+	// 	planDuration := time.Since(planStart)
 	// fmt.Printf("[TIMING] Query plan execution took: %v\n", planDuration)
 	if err != nil {
 		return fmt.Errorf("error executing optimized query: %v", err)
 	}
 
-// 	schemaStart := time.Now()
+	// 	schemaStart := time.Now()
 	ctx := context.Background()
 	// Get table for schema information
 	table, err := engine.db.GetTable(ctx, plan.TableName)
@@ -591,7 +593,7 @@ func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *
 	if err != nil {
 		return err
 	}
-// 	schemaDuration := time.Since(schemaStart)
+	// 	schemaDuration := time.Since(schemaStart)
 	// fmt.Printf("[TIMING] Schema retrieval took: %v\n", schemaDuration)
 
 	if hasCountFunc {
@@ -603,7 +605,7 @@ func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *
 	}
 
 	// Convert optimized rows to the format expected by the formatter
-// 	conversionStart := time.Now()
+	// 	conversionStart := time.Now()
 	var rowPointers []*Row
 	for i := range optimizedRows {
 		rowPointers = append(rowPointers, &optimizedRows[i])
@@ -614,9 +616,9 @@ func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *
 	for i := range schema {
 		schemaPointers = append(schemaPointers, &schema[i])
 	}
-// 	conversionDuration := time.Since(conversionStart)
+	// 	conversionDuration := time.Since(conversionStart)
 	// fmt.Printf("[TIMING] Data conversion took: %v\n", conversionDuration)
-// 	outputStart := time.Now()
+	// 	outputStart := time.Now()
 	if hasStarExpr {
 		// Select all columns - use existing formatter
 		for _, row := range rowPointers {
@@ -660,10 +662,10 @@ func (engine *SqliteEngine) handleOptimizedSelect(stmt *sqlparser.Select, plan *
 			}
 		}
 	}
-// 	outputDuration := time.Since(outputStart)
+	// 	outputDuration := time.Since(outputStart)
 	// fmt.Printf("[TIMING] Output formatting took: %v\n", outputDuration)
-	
-// 	totalDuration := time.Since(totalStart)
+
+	// 	totalDuration := time.Since(totalStart)
 	// fmt.Printf("[TIMING] Total optimized select execution took: %v\n", totalDuration)
 
 	return nil

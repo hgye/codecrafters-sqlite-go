@@ -132,11 +132,11 @@ func (qo *QueryOptimizer) ExecutePlan(plan *QueryPlan, selectQuery *sqlparser.Se
 
 // executeIndexQueryWithTiming executes a query using an index with detailed timing
 func (qo *QueryOptimizer) executeIndexQueryWithTiming(table Table, plan *QueryPlan, selectQuery *sqlparser.Select, ctx context.Context) ([]Row, error) {
-// 	overallStart := time.Now()
+	// 	overallStart := time.Now()
 	// fmt.Printf("[TIMING] Starting index query execution\n")
 
 	// Get the index with timing
-// 	indexLookupStart := time.Now()
+	// 	indexLookupStart := time.Now()
 	indexes, err := table.GetIndexes(ctx)
 	if err != nil {
 		return nil, err
@@ -154,20 +154,19 @@ func (qo *QueryOptimizer) executeIndexQueryWithTiming(table Table, plan *QueryPl
 		return nil, fmt.Errorf("index %s not found", plan.IndexName)
 	}
 
-// 	indexLookupDuration := time.Since(indexLookupStart)
+	// 	indexLookupDuration := time.Since(indexLookupStart)
 	// fmt.Printf("[TIMING] Index lookup took: %v\n", indexLookupDuration)
 
 	// Use the index to find matching rowids with timing
-// 	indexSearchStart := time.Now()
+	// 	indexSearchStart := time.Now()
 	// fmt.Printf("[TIMING] Starting index search for key: %v\n", plan.IndexValue)
 	indexEntries, err := targetIndex.SearchByKey(ctx, plan.IndexValue)
-// 	indexSearchDuration := time.Since(indexSearchStart)
+	// 	indexSearchDuration := time.Since(indexSearchStart)
 	// fmt.Printf("[TIMING] Index search took: %v (found %d entries)\n", indexSearchDuration, len(indexEntries))
 	if err != nil {
 		// No fallback - return the error
 		return nil, fmt.Errorf("index search failed: %w", err)
 	}
-
 
 	// If no entries found, return empty result
 	if len(indexEntries) == 0 {
@@ -175,15 +174,15 @@ func (qo *QueryOptimizer) executeIndexQueryWithTiming(table Table, plan *QueryPl
 	}
 
 	// Extract rowids from index entries using parallel fetching with timing
-// 	rowFetchStart := time.Now()
+	// 	rowFetchStart := time.Now()
 	// fmt.Printf("[TIMING] Starting parallel row fetching for %d entries\n", len(indexEntries))
 	matchingRows := qo.fetchRowsParallel(ctx, table, indexEntries)
-// 	rowFetchDuration := time.Since(rowFetchStart)
+	// 	rowFetchDuration := time.Since(rowFetchStart)
 	// fmt.Printf("[TIMING] Parallel row fetching took: %v (fetched %d rows)\n", rowFetchDuration, len(matchingRows))
 
 	// Apply any additional filtering from the WHERE clause if needed with timing
 	if selectQuery.Where != nil {
-// 		filterStart := time.Now()
+		// 		filterStart := time.Now()
 		// fmt.Printf("[TIMING] Starting WHERE clause filtering\n")
 		schema, err := table.GetSchema(ctx)
 		if err != nil {
@@ -200,60 +199,60 @@ func (qo *QueryOptimizer) executeIndexQueryWithTiming(table Table, plan *QueryPl
 				finalRows = append(finalRows, row)
 			}
 		}
-// 		filterDuration := time.Since(filterStart)
+		// 		filterDuration := time.Since(filterStart)
 		// fmt.Printf("[TIMING] WHERE clause filtering took: %v (filtered to %d rows)\n", filterDuration, len(finalRows))
-// 		overallDuration := time.Since(overallStart)
+		// 		overallDuration := time.Since(overallStart)
 		// fmt.Printf("[TIMING] Overall query execution took: %v\n", overallDuration)
 		return finalRows, nil
 	}
 
-// 	overallDuration := time.Since(overallStart)
+	// 	overallDuration := time.Since(overallStart)
 	// fmt.Printf("[TIMING] Overall query execution took: %v\n", overallDuration)
 	return matchingRows, nil
 }
 
-// executeFullTableScan executes a query with full table scan (fallback)
-func (qo *QueryOptimizer) executeFullTableScan(table Table, selectQuery *sqlparser.Select, ctx context.Context) ([]Row, error) {
-	// Get all rows from the table
-	allRows, err := table.GetRows(ctx)
-	if err != nil {
-		return nil, err
-	}
+// // executeFullTableScan executes a query with full table scan (fallback)
+// func (qo *QueryOptimizer) executeFullTableScan(table Table, selectQuery *sqlparser.Select, ctx context.Context) ([]Row, error) {
+// 	// Get all rows from the table
+// 	allRows, err := table.GetRows(ctx)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	// Apply WHERE clause filtering if present
-	var filteredRows []Row
-	if selectQuery.Where != nil {
-		schema, err := table.GetSchema(ctx)
-		if err != nil {
-			return nil, err
-		}
+// 	// Apply WHERE clause filtering if present
+// 	var filteredRows []Row
+// 	if selectQuery.Where != nil {
+// 		schema, err := table.GetSchema(ctx)
+// 		if err != nil {
+// 			return nil, err
+// 		}
 
-		for _, row := range allRows {
-			match, err := evaluateWhereClause(selectQuery.Where.Expr, row, schema)
-			if err != nil {
-				continue
-			}
-			if match {
-				filteredRows = append(filteredRows, row)
-			}
-		}
-	} else {
-		filteredRows = allRows
-	}
+// 		for _, row := range allRows {
+// 			match, err := evaluateWhereClause(selectQuery.Where.Expr, row, schema)
+// 			if err != nil {
+// 				continue
+// 			}
+// 			if match {
+// 				filteredRows = append(filteredRows, row)
+// 			}
+// 		}
+// 	} else {
+// 		filteredRows = allRows
+// 	}
 
-	// Apply LIMIT if specified
-	if selectQuery.Limit != nil {
-		if limit, ok := selectQuery.Limit.Rowcount.(*sqlparser.SQLVal); ok {
-			if limitVal, err := parseIntValue(limit.Val); err == nil && limitVal >= 0 {
-				if len(filteredRows) > limitVal {
-					filteredRows = filteredRows[:limitVal]
-				}
-			}
-		}
-	}
+// 	// Apply LIMIT if specified
+// 	if selectQuery.Limit != nil {
+// 		if limit, ok := selectQuery.Limit.Rowcount.(*sqlparser.SQLVal); ok {
+// 			if limitVal, err := parseIntValue(limit.Val); err == nil && limitVal >= 0 {
+// 				if len(filteredRows) > limitVal {
+// 					filteredRows = filteredRows[:limitVal]
+// 				}
+// 			}
+// 		}
+// 	}
 
-	return filteredRows, nil
-}
+// 	return filteredRows, nil
+// }
 
 // evaluateWhereClause evaluates a WHERE clause condition for a row
 func evaluateWhereClause(expr sqlparser.Expr, row Row, schema []Column) (bool, error) {
@@ -347,7 +346,6 @@ func compareValues(left, right interface{}, operator string) (bool, error) {
 	leftStr := fmt.Sprintf("%v", left)
 	rightStr := fmt.Sprintf("%v", right)
 
-
 	switch operator {
 	case "=":
 		return leftStr == rightStr, nil
@@ -367,16 +365,16 @@ func compareValues(left, right interface{}, operator string) (bool, error) {
 }
 
 // parseIntValue parses an integer value from bytes
-func parseIntValue(val []byte) (int, error) {
-	str := string(val)
-	var result int
-	_, err := fmt.Sscanf(str, "%d", &result)
-	return result, err
-}
+// func parseIntValue(val []byte) (int, error) {
+// 	str := string(val)
+// 	var result int
+// 	_, err := fmt.Sscanf(str, "%d", &result)
+// 	return result, err
+// }
 
 // fetchRowsParallel fetches rows by rowid in parallel using goroutines
 func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, indexEntries []IndexEntry) []Row {
-// 	setupStart := time.Now()
+	// 	setupStart := time.Now()
 	// Create a context with 3-second timeout
 	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -386,7 +384,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 	if len(indexEntries) < maxWorkers {
 		maxWorkers = len(indexEntries)
 	}
-// 	setupDuration := time.Since(setupStart)
+	// 	setupDuration := time.Since(setupStart)
 	// fmt.Printf("[TIMING] Worker setup took: %v (using %d workers for %d entries)\\n", setupDuration, maxWorkers, len(indexEntries))
 
 	type rowResult struct {
@@ -418,7 +416,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 				}
 
 				row, err := table.GetRowByRowid(timeoutCtx, work.entry.Rowid)
-				
+
 				resultChan <- rowResult{
 					row:   row,
 					rowid: work.entry.Rowid,
@@ -430,7 +428,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 	}
 
 	// Send work to workers
-// 	workDistributionStart := time.Now()
+	// 	workDistributionStart := time.Now()
 	for i, entry := range indexEntries {
 		workChan <- struct {
 			entry IndexEntry
@@ -438,7 +436,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 		}{entry: entry, index: i}
 	}
 	close(workChan)
-// 	workDistributionDuration := time.Since(workDistributionStart)
+	// 	workDistributionDuration := time.Since(workDistributionStart)
 	// fmt.Printf("[TIMING] Work distribution took: %v\\n", workDistributionDuration)
 
 	// Wait for all workers to finish
@@ -448,7 +446,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 	}()
 
 	// Collect results maintaining order
-// 	resultCollectionStart := time.Now()
+	// 	resultCollectionStart := time.Now()
 	results := make([]*Row, len(indexEntries))
 	validCount := 0
 	for result := range resultChan {
@@ -457,7 +455,7 @@ func (qo *QueryOptimizer) fetchRowsParallel(ctx context.Context, table Table, in
 			validCount++
 		}
 	}
-// 	resultCollectionDuration := time.Since(resultCollectionStart)
+	// 	resultCollectionDuration := time.Since(resultCollectionStart)
 	// fmt.Printf("[TIMING] Result collection took: %v (collected %d valid results)\\n", resultCollectionDuration, validCount)
 
 	// Filter out nil entries and preserve order

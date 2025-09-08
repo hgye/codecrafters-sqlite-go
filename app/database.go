@@ -12,6 +12,7 @@ import (
 type DatabaseImpl struct {
 	dbRaw        DatabaseRaw
 	tables       map[string]Table // cached tables
+	indexes      map[string]Index // cached indexes
 	schemas      []SchemaRecord   // cached schema records
 	schemaLoaded bool             // flag to track if schema is loaded
 }
@@ -26,6 +27,7 @@ func NewDatabase(filePath string, options ...DatabaseOption) (*DatabaseImpl, err
 	db := &DatabaseImpl{
 		dbRaw:        dbRaw,
 		tables:       make(map[string]Table),
+		indexes:      make(map[string]Index),
 		schemas:      nil,
 		schemaLoaded: false,
 	}
@@ -33,8 +35,8 @@ func NewDatabase(filePath string, options ...DatabaseOption) (*DatabaseImpl, err
 	return db, nil
 }
 
-// GetSchema returns all schema records from the database
-func (db *DatabaseImpl) GetSchema(ctx context.Context) ([]SchemaRecord, error) {
+// LoadSchema loads and caches all schema records, tables, and indexes from the database
+func (db *DatabaseImpl) LoadSchema(ctx context.Context) ([]SchemaRecord, error) {
 	// Return cached schema if available
 	if db.schemaLoaded {
 		return db.schemas, nil
@@ -42,10 +44,13 @@ func (db *DatabaseImpl) GetSchema(ctx context.Context) ([]SchemaRecord, error) {
 
 	schemaCells, err := db.dbRaw.ReadSchemaTable(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get schema: %w", err)
+		return nil, fmt.Errorf("load schema: %w", err)
 	}
 
 	var schemas []SchemaRecord
+	tables := make(map[string]Table)
+	indexes := make(map[string]Index)
+
 	for _, cell := range schemaCells {
 		schema := cell.Record.RecordBody.ParseAsSchema()
 		if schema != nil {
@@ -53,111 +58,94 @@ func (db *DatabaseImpl) GetSchema(ctx context.Context) ([]SchemaRecord, error) {
 		}
 	}
 
-	// Cache the schema
+	// Single pass: create tables and indexes, and associate indexes with tables
+	for _, schema := range schemas {
+		if schema.Type == "table" && schema.Name != "sqlite_master" {
+			tableRaw := NewTableRaw(db.dbRaw, schema.Name, int(schema.RootPage))
+			// fmt.Fprintf(os.Stderr, "Creating table: %s\n", schema.Name)
+			tableImpl := NewTable(tableRaw, &schema)
+			tables[schema.Name] = Table(tableImpl)
+		} else if schema.Type == "index" {
+			indexRaw := NewIndexRaw(db.dbRaw, schema.Name, int(schema.RootPage), &schema)
+			index := NewIndex(indexRaw, &schema)
+			indexes[schema.Name] = index
+			// Associate with table if it exists
+			if table, ok := tables[schema.TblName]; ok {
+				if tableImpl, ok := table.(*TableImpl); ok {
+					tableImpl.AddIndex(index)
+				}
+			}
+		}
+	}
+
 	db.schemas = schemas
+	db.tables = tables
+	db.indexes = indexes
 	db.schemaLoaded = true
 
 	return schemas, nil
 }
 
+// GetTables returns a list of all table names
+func (db *DatabaseImpl) GetTables(ctx context.Context) ([]string, error) {
+	if !db.schemaLoaded {
+		_, err := db.LoadSchema(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get tables: %w", err)
+		}
+	}
+	names := make([]string, 0, len(db.tables)+1)
+	names = append(names, "sqlite_master")
+	for name := range db.tables {
+		// fmt.Fprintf(os.Stderr, "Found table: %s\n", name)
+		if name != "sqlite_master" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // GetTable returns a table by name
 func (db *DatabaseImpl) GetTable(ctx context.Context, name string) (Table, error) {
-	// Check cache first
+	if !db.schemaLoaded {
+		_, err := db.LoadSchema(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if table, exists := db.tables[name]; exists {
 		return table, nil
 	}
-
-	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read schema for table %s: %w", name, err)
-	}
-
-	// Find table in schema
-	for _, schema := range schemas {
-		if schema.Type == "table" && schema.Name == name {
-			// Create raw table
-			tableRaw := NewTableRaw(db.dbRaw, schema.Name, int(schema.RootPage))
-
-			// Create logical table
-			tableImpl := NewTable(tableRaw, &schema)
-
-			// Load and associate indexes for this table
-			if err := db.loadTableIndexes(ctx, tableImpl, schemas); err != nil {
-				return nil, fmt.Errorf("load indexes for table %s: %w", name, err)
-			}
-
-			// Cache and return
-			table := Table(tableImpl)
-			db.tables[name] = table
-			return table, nil
-		}
-
-	}
-
 	return nil, fmt.Errorf("table not found: %s", name)
 }
 
 // GetIndex returns an index by name
 func (db *DatabaseImpl) GetIndex(ctx context.Context, name string) (Index, error) {
-	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read schema for index %s: %w", name, err)
-	}
-
-	// Find index in schema
-	for _, schema := range schemas {
-		if schema.Type == "index" && schema.Name == name {
-			// Create raw index
-			indexRaw := NewIndexRaw(db.dbRaw, schema.Name, int(schema.RootPage), &schema)
-
-			// Create logical index
-			index := NewIndex(indexRaw, &schema)
-
-			return index, nil
+	if !db.schemaLoaded {
+		_, err := db.LoadSchema(ctx)
+		if err != nil {
+			return nil, err
 		}
 	}
-
+	if index, exists := db.indexes[name]; exists {
+		return index, nil
+	}
 	return nil, fmt.Errorf("index not found: %s", name)
 }
 
 // GetIndices returns a list of all index names
 func (db *DatabaseImpl) GetIndices(ctx context.Context) ([]string, error) {
-	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get indices: %w", err)
-	}
-
-	var indices []string
-	for _, schema := range schemas {
-		if schema.Type == "index" {
-			indices = append(indices, schema.Name)
+	if !db.schemaLoaded {
+		_, err := db.LoadSchema(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get indices: %w", err)
 		}
 	}
-
-	return indices, nil
-}
-
-// GetTables returns a list of all table names
-func (db *DatabaseImpl) GetTables(ctx context.Context) ([]string, error) {
-	// Get schema records (this will use cache if available)
-	schemas, err := db.GetSchema(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get tables: %w", err)
+	names := make([]string, 0, len(db.indexes))
+	for name := range db.indexes {
+		names = append(names, name)
 	}
-
-	var tables []string
-	tables = append(tables, "sqlite_master") // First table is always the schema table
-
-	for _, schema := range schemas {
-		if schema.Type == "table" && schema.Name != "sqlite_master" {
-			tables = append(tables, schema.Name)
-		}
-	}
-
-	return tables, nil
+	return names, nil
 }
 
 // Close closes the database
@@ -173,6 +161,7 @@ func (db *DatabaseImpl) GetPageSize() int {
 // ClearCache clears all cached data (tables and schema)
 func (db *DatabaseImpl) ClearCache() {
 	db.tables = make(map[string]Table)
+	db.indexes = make(map[string]Index)
 	db.schemas = nil
 	db.schemaLoaded = false
 }
@@ -254,7 +243,7 @@ func handleColumnNamesWithSpaces(sql string) string {
 	// Replace "size range" specifically (case insensitive)
 	sql = strings.ReplaceAll(sql, "size range", "`size range`")
 	sql = strings.ReplaceAll(sql, "SIZE RANGE", "`SIZE RANGE`")
-	
+
 	return sql
 }
 

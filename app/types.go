@@ -18,12 +18,12 @@ type Database interface {
 // DatabaseProvider consolidates schema, table and index access
 type DatabaseProvider interface {
 	// Schema operations
-	GetSchema(ctx context.Context) ([]SchemaRecord, error)
+	LoadSchema(ctx context.Context) ([]SchemaRecord, error)
 	GetTables(ctx context.Context) ([]string, error)
-	
+
 	// Table operations
 	GetTable(ctx context.Context, name string) (Table, error)
-	
+
 	// Index operations
 	GetIndex(ctx context.Context, name string) (Index, error)
 	GetIndices(ctx context.Context) ([]string, error)
@@ -52,11 +52,11 @@ type Index interface {
 type DataOperations interface {
 	// Schema operations
 	GetSchema(ctx context.Context) ([]Column, error)
-	
+
 	// Data reading operations
 	GetRows(ctx context.Context) ([]Row, error)
 	Count(ctx context.Context) (int, error)
-	
+
 	// Data filtering operations
 	SelectColumns(ctx context.Context, columns []string) ([]Row, error)
 	Filter(ctx context.Context, condition func(Row) bool) ([]Row, error)
@@ -99,7 +99,6 @@ type IndexRaw interface {
 type CellReader interface {
 	ReadAllCells(ctx context.Context) ([]Cell, error)
 }
-
 
 // Physical data structures from SQLite format
 
