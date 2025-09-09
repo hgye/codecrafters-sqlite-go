@@ -88,127 +88,13 @@ func (db *DatabaseRawImpl) ReadPage(ctx context.Context, pageNum int) ([]byte, e
 
 // ReadSchemaTable reads the schema table (sqlite_schema/sqlite_master) from page 1 with context
 func (db *DatabaseRawImpl) ReadSchemaTable(ctx context.Context) ([]Cell, error) {
-	// Schema table is always on page 1
-	pageData, err := db.ReadPage(ctx, 1)
+	// Schema table is always on page 1 - use BTree abstraction
+	btree := NewBTree(db, 1, BTreeTypeTable)
+	cells, err := btree.TraverseAll(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read schema table page: %w", err)
+		return nil, fmt.Errorf("read schema table: %w", err)
 	}
-
-	// For page 1, we need special handling due to the database header
-	// Use BTree for other pages, but use custom logic for page 1
-	return db.readCellsFromPage1(ctx, pageData)
-}
-
-// readCellsFromPage1 reads all cells from page 1 using structured parsing with context
-func (db *DatabaseRawImpl) readCellsFromPage1(ctx context.Context, pageData []byte) ([]Cell, error) {
-	// Check context before starting work
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("read cells cancelled: %w", err)
-	}
-
-	// Page header starts at offset 100 (after database header)
-	const headerOffset = 100
-
-	if len(pageData) < headerOffset+8 {
-		return nil, fmt.Errorf("page too small for page 1: have %d bytes, need at least %d",
-			len(pageData), headerOffset+8)
-	}
-
-	// Parse page header starting at the correct offset
-	pageHeader, err := db.parsePageHeaderAtOffset(pageData, headerOffset)
-	if err != nil {
-		return nil, fmt.Errorf("parse page header: %w", err)
-	}
-
-	// Validate page type
-	if pageHeader.PageType != 0x0D {
-		return nil, fmt.Errorf("unexpected page type: expected 0x0D (leaf table), got 0x%02X",
-			pageHeader.PageType)
-	}
-
-	// Read cell pointers
-	cellPointers, err := db.readCellPointersFromPage(pageData, headerOffset+8, int(pageHeader.CellCount))
-	if err != nil {
-		return nil, fmt.Errorf("read cell pointers: %w", err)
-	}
-
-	// Read cells - cell offsets are relative to the start of the page (offset 0)
-	cells := make([]Cell, pageHeader.CellCount)
-	for i, pointer := range cellPointers {
-		cell, err := db.readCellAtOffset(pageData, int(pointer))
-		if err != nil {
-			return nil, fmt.Errorf("read cell %d at offset %d: %w", i, pointer, err)
-		}
-		cells[i] = *cell
-	}
-
 	return cells, nil
-}
-
-// parsePageHeaderAtOffset parses a page header at a specific offset
-func (db *DatabaseRawImpl) parsePageHeaderAtOffset(pageData []byte, offset int) (*PageHeader, error) {
-	if offset+8 > len(pageData) {
-		return nil, fmt.Errorf("not enough data for page header at offset %d", offset)
-	}
-
-	return &PageHeader{
-		PageType:         pageData[offset],
-		FirstFreeblock:   binary.BigEndian.Uint16(pageData[offset+1:]),
-		CellCount:        binary.BigEndian.Uint16(pageData[offset+3:]),
-		CellContentStart: binary.BigEndian.Uint16(pageData[offset+5:]),
-		FragmentedBytes:  pageData[offset+7],
-	}, nil
-}
-
-// readCellPointersFromPage reads cell pointers starting at a specific offset
-func (db *DatabaseRawImpl) readCellPointersFromPage(pageData []byte, offset int, cellCount int) ([]uint16, error) {
-	cellPointers := make([]uint16, cellCount)
-	for i := 0; i < cellCount; i++ {
-		ptrOffset := offset + i*2
-		if ptrOffset+2 > len(pageData) {
-			return nil, fmt.Errorf("cell pointer %d extends beyond page", i)
-		}
-		cellPointers[i] = binary.BigEndian.Uint16(pageData[ptrOffset:])
-	}
-	return cellPointers, nil
-}
-
-// readCellAtOffset reads a cell at a specific offset
-func (db *DatabaseRawImpl) readCellAtOffset(pageData []byte, offset int) (*Cell, error) {
-	if offset >= len(pageData) {
-		return nil, fmt.Errorf("cell offset %d exceeds page size %d", offset, len(pageData))
-	}
-
-	// Read payload size (varint)
-	payloadSize, bytesRead := readVarint(pageData, offset)
-	offset += bytesRead
-
-	// Read row ID (varint)
-	rowID, bytesRead := readVarint(pageData, offset)
-	offset += bytesRead
-
-	// Read payload
-	if offset+int(payloadSize) > len(pageData) {
-		return nil, fmt.Errorf("payload extends beyond page boundary: need %d bytes, have %d",
-			offset+int(payloadSize), len(pageData))
-	}
-	payload := pageData[offset : offset+int(payloadSize)]
-
-	// Parse record from payload
-	header, headerOffset := readRecordHeader(payload, 0)
-	body, _, err := readRecordBody(payload, headerOffset, header)
-	if err != nil {
-		return nil, fmt.Errorf("parse record body: %w", err)
-	}
-
-	return &Cell{
-		PayloadSize: payloadSize,
-		Rowid:       rowID,
-		Record: Record{
-			RecordHeader: header,
-			RecordBody:   body,
-		},
-	}, nil
 }
 
 // GetPageSize returns the database page size

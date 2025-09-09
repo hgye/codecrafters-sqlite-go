@@ -99,18 +99,24 @@ func (bt *BTree) SearchRange(ctx context.Context, startKey, endKey BTreeKey) ([]
 
 // traversePage recursively traverses a B-tree page
 func (bt *BTree) traversePage(ctx context.Context, pageNum int) ([]Cell, error) {
+
+	headerOffset := 0
+
+	if pageNum == 1 {
+		headerOffset = 100
+	}
 	pageData, err := bt.dbRaw.ReadPage(ctx, pageNum)
 	if err != nil {
 		return nil, fmt.Errorf("read page %d: %w", pageNum, err)
 	}
 
-	pageHeader, err := bt.parsePageHeader(pageData)
+	pageHeader, err := bt.parsePageHeaderAtOffset(pageData, headerOffset)
 	if err != nil {
 		return nil, fmt.Errorf("parse page header: %w", err)
 	}
 
 	if bt.isLeafPage(pageHeader) {
-		return bt.readLeafCells(ctx, pageHeader, pageData)
+		return bt.readLeafCells(ctx, pageHeader, pageData, pageNum)
 	}
 
 	return bt.traverseInteriorPage(ctx, pageHeader, pageData)
@@ -124,10 +130,38 @@ func (bt *BTree) searchPage(ctx context.Context, pageNum int, searchKey BTreeKey
 		return nil, fmt.Errorf("read page %d: %w", pageNum, err)
 	}
 
+	headerOffset := 0
+	// Special handling for page 1 (sqlite_master table with 100-byte database header)
+	if pageNum == 1 {
+		headerOffset = 100
+	}
+	// Page 1 has a 100-byte database header, so page header starts at offset 100
+	// 	const headerOffset = 100
+
+	// 	if len(pageData) < headerOffset+8 {
+	// 		return nil, fmt.Errorf("page 1 too small: have %d bytes, need at least %d",
+	// 			len(pageData), headerOffset+8)
+	// 	}
+
+	// 	// Parse page header at the correct offset for page 1
+	// 	pageHeader, err := bt.parsePageHeaderAtOffset(pageData, headerOffset)
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("parse page 1 header: %w", err)
+	// 	}
+
+	// 	// Page 1 should always be a leaf page (sqlite_master table)
+	// 	if !bt.isLeafPage(pageHeader) {
+	// 		return nil, fmt.Errorf("page 1 should be a leaf page, got type 0x%02X", pageHeader.PageType)
+	// 	}
+
+	// 	// Search leaf cells - use regular method since pageHeader already has correct offset
+	// 	return bt.searchLeafPage(ctx, pageHeader, pageData, searchKey, 1)
+	// }
+
 	// Show first 16 bytes of page for debugging
 	// fmt.Printf("DEBUG: Page %d first 16 bytes: %x\n", pageNum, pageData[:16])
 
-	pageHeader, err := bt.parsePageHeader(pageData)
+	pageHeader, err := bt.parsePageHeaderAtOffset(pageData, headerOffset)
 	if err != nil {
 		return nil, fmt.Errorf("parse page header: %w", err)
 	}
@@ -136,7 +170,7 @@ func (bt *BTree) searchPage(ctx context.Context, pageNum int, searchKey BTreeKey
 
 	if bt.isLeafPage(pageHeader) {
 		// fmt.Printf("DEBUG: Page %d is LEAF page with %d cells\n", pageNum, pageHeader.CellCount)
-		return bt.searchLeafPage(ctx, pageHeader, pageData, searchKey)
+		return bt.searchLeafPage(ctx, pageHeader, pageData, searchKey, pageNum)
 	}
 
 	// Interior page - find the right child
@@ -159,9 +193,19 @@ func (bt *BTree) isLeafPage(header *PageHeader) bool {
 }
 
 // readLeafCells reads all cells from a leaf page
-func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData []byte) ([]Cell, error) {
+func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData []byte, pageNum int) ([]Cell, error) {
 	var cells []Cell
+
+	// Calculate cell pointer offset
 	cellPointerOffset := bt.getCellPointerOffset(header)
+
+	// For page 1, we need to account for the 100-byte database header
+	// The page header was parsed at offset 100, so cell pointers start at offset 108
+	if pageNum == 1 {
+		// This is page 1 with database header
+		cellPointerOffset = 108 // 100 (db header) + 8 (page header)
+	}
+
 	errorHandler := NewErrorHandler(ErrorStrategySkip, nil)
 
 	for i := uint16(0); i < header.CellCount; i++ {
@@ -181,12 +225,20 @@ func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData
 	}
 
 	return cells, nil
-}
-
-// searchLeafPage searches for matching cells in a leaf page
-func (bt *BTree) searchLeafPage(ctx context.Context, header *PageHeader, pageData []byte, searchKey BTreeKey) ([]Cell, error) {
+} // searchLeafPage searches for matching cells in a leaf page
+func (bt *BTree) searchLeafPage(ctx context.Context, header *PageHeader, pageData []byte, searchKey BTreeKey, pageNum int) ([]Cell, error) {
 	var results []Cell
+
+	// Calculate cell pointer offset
 	cellPointerOffset := bt.getCellPointerOffset(header)
+
+	// For page 1, we need to account for the 100-byte database header
+	// The page header was parsed at offset 100, so cell pointers start at offset 108
+	if pageNum == 1 {
+		// This is page 1 with database header
+		cellPointerOffset = 108 // 100 (db header) + 8 (page header)
+	}
+
 	errorHandler := NewErrorHandler(ErrorStrategySkip, nil)
 
 	for i := uint16(0); i < header.CellCount; i++ {
@@ -287,18 +339,18 @@ func (bt *BTree) getRightmostChild(pageData []byte) uint32 {
 	return binary.BigEndian.Uint32(pageData[8:12])
 }
 
-// parsePageHeader parses a page header
-func (bt *BTree) parsePageHeader(pageData []byte) (*PageHeader, error) {
-	if len(pageData) < 8 {
-		return nil, fmt.Errorf("page too small for header")
+// parsePageHeaderAtOffset parses a page header at a specific offset (for page 1)
+func (bt *BTree) parsePageHeaderAtOffset(pageData []byte, offset int) (*PageHeader, error) {
+	if offset+8 > len(pageData) {
+		return nil, fmt.Errorf("not enough data for page header at offset %d", offset)
 	}
 
 	return &PageHeader{
-		PageType:         pageData[0],
-		FirstFreeblock:   binary.BigEndian.Uint16(pageData[1:3]),
-		CellCount:        binary.BigEndian.Uint16(pageData[3:5]),
-		CellContentStart: binary.BigEndian.Uint16(pageData[5:7]),
-		FragmentedBytes:  pageData[7],
+		PageType:         pageData[offset],
+		FirstFreeblock:   binary.BigEndian.Uint16(pageData[offset+1:]),
+		CellCount:        binary.BigEndian.Uint16(pageData[offset+3:]),
+		CellContentStart: binary.BigEndian.Uint16(pageData[offset+5:]),
+		FragmentedBytes:  pageData[offset+7],
 	}, nil
 }
 
