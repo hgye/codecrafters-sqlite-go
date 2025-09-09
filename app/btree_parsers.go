@@ -9,34 +9,35 @@ import (
 type TableBTreeParser struct{}
 
 // ParseLeafCell parses a leaf table cell
-func (p *TableBTreeParser) ParseLeafCell(pageData []byte, offset int) (*BTreeCell, error) {
+func (p *TableBTreeParser) ParseLeafCell(pageData []byte, offset int) (*Cell, error) {
 	if offset >= len(pageData) {
 		return nil, fmt.Errorf("cell offset %d exceeds page size", offset)
 	}
-	
+
 	// Read payload size (varint)
 	payloadSize, bytesRead := readVarint(pageData, offset)
 	offset += bytesRead
-	
+
 	// Read row ID (varint)
 	rowID, bytesRead := readVarint(pageData, offset)
 	offset += bytesRead
-	
+
 	// Read payload
 	if offset+int(payloadSize) > len(pageData) {
 		return nil, fmt.Errorf("payload extends beyond page boundary")
 	}
 	payload := pageData[offset : offset+int(payloadSize)]
-	
+
 	// Parse record from payload
 	header, headerOffset := readRecordHeader(payload, 0)
 	body, _, err := readRecordBody(payload, headerOffset, header)
 	if err != nil {
 		return nil, err
 	}
-	
-	return &BTreeCell{
-		Rowid: rowID,
+
+	return &Cell{
+		PayloadSize: payloadSize,
+		Rowid:       rowID,
 		Record: Record{
 			RecordHeader: header,
 			RecordBody:   body,
@@ -49,25 +50,24 @@ func (p *TableBTreeParser) ParseInteriorCell(pageData []byte, offset int) (uint3
 	if offset+4 > len(pageData) {
 		return 0, nil, fmt.Errorf("interior cell offset %d exceeds page size %d", offset, len(pageData))
 	}
-	
+
 	// Interior table cell format: 4-byte child page number + varint rowid key
 	childPageNum := binary.BigEndian.Uint32(pageData[offset : offset+4])
 	offset += 4
-	
-	
+
 	// Read rowid key
 	rowid, _ := readVarint(pageData, offset)
-	
+
 	return childPageNum, uint64(rowid), nil
 }
 
-// ExtractSearchKey extracts the search key (rowid) from a table cell
-func (p *TableBTreeParser) ExtractSearchKey(cell *BTreeCell) BTreeKey {
+// ExtractSearchKey extracts the key for searching (rowid for table B-trees)
+func (p *TableBTreeParser) ExtractSearchKey(cell *Cell) BTreeKey {
 	return cell.Rowid
 }
 
-// MatchesSearchKey checks if a table cell matches the search rowid
-func (p *TableBTreeParser) MatchesSearchKey(cell *BTreeCell, searchKey BTreeKey) bool {
+// MatchesSearchKey checks if a cell matches the search key
+func (p *TableBTreeParser) MatchesSearchKey(cell *Cell, searchKey BTreeKey) bool {
 	searchRowid, ok := searchKey.(uint64)
 	if !ok {
 		return false
@@ -79,27 +79,27 @@ func (p *TableBTreeParser) MatchesSearchKey(cell *BTreeCell, searchKey BTreeKey)
 type IndexBTreeParser struct{}
 
 // ParseLeafCell parses a leaf index cell
-func (p *IndexBTreeParser) ParseLeafCell(pageData []byte, offset int) (*BTreeCell, error) {
+func (p *IndexBTreeParser) ParseLeafCell(pageData []byte, offset int) (*Cell, error) {
 	if offset >= len(pageData) {
 		return nil, fmt.Errorf("cell offset %d exceeds page size", offset)
 	}
-	
+
 	// Leaf index cell format: varint payload_size, payload
 	payloadSize, bytesRead := readVarint(pageData, offset)
 	offset += bytesRead
-	
+
 	if offset+int(payloadSize) > len(pageData) {
 		return nil, fmt.Errorf("payload extends beyond page boundary")
 	}
 	payload := pageData[offset : offset+int(payloadSize)]
-	
+
 	// Parse record from payload
 	header, headerOffset := readRecordHeader(payload, 0)
 	body, _, err := readRecordBody(payload, headerOffset, header)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// For index cells, the last value in the record is typically the rowid
 	var rowid uint64
 	if len(body.Values) > 0 {
@@ -109,9 +109,10 @@ func (p *IndexBTreeParser) ParseLeafCell(pageData []byte, offset int) (*BTreeCel
 			rowid = BytesToInteger(bytes)
 		}
 	}
-	
-	return &BTreeCell{
-		Rowid: rowid,
+
+	return &Cell{
+		PayloadSize: payloadSize,
+		Rowid:       rowid,
 		Record: Record{
 			RecordHeader: header,
 			RecordBody:   body,
@@ -122,33 +123,33 @@ func (p *IndexBTreeParser) ParseLeafCell(pageData []byte, offset int) (*BTreeCel
 // ParseInteriorCell parses an interior index cell
 func (p *IndexBTreeParser) ParseInteriorCell(pageData []byte, offset int) (uint32, BTreeKey, error) {
 	// fmt.Printf("DEBUG: ParseInteriorCell at offset 0x%x\n", offset)
-	
+
 	if offset+4 > len(pageData) {
 		return 0, nil, fmt.Errorf("interior cell offset exceeds page size")
 	}
-	
+
 	// Interior index cell format: 4-byte child page number, varint payload_size, payload (key)
 	childPageNum := binary.BigEndian.Uint32(pageData[offset : offset+4])
 	offset += 4
-	
+
 	// Read payload size
 	payloadSize, bytesRead := readVarint(pageData, offset)
 	// recordOffset := offset + bytesRead
 	// fmt.Printf("DEBUG: Record starts at offset 0x%x, payload size: %d\n", recordOffset, payloadSize)
 	offset += bytesRead
-	
+
 	if offset+int(payloadSize) > len(pageData) {
 		return 0, nil, fmt.Errorf("payload extends beyond page boundary")
 	}
 	payload := pageData[offset : offset+int(payloadSize)]
-	
+
 	// Parse the key from payload
 	header, headerOffset := readRecordHeader(payload, 0)
 	body, _, err := readRecordBody(payload, headerOffset, header)
 	if err != nil {
 		return childPageNum, nil, err
 	}
-	
+
 	// Extract the first key value for comparison
 	var key interface{}
 	if len(body.Values) > 0 {
@@ -159,12 +160,12 @@ func (p *IndexBTreeParser) ParseInteriorCell(pageData []byte, offset int) (uint3
 			key = body.Values[0]
 		}
 	}
-	
+
 	return childPageNum, key, nil
 }
 
-// ExtractSearchKey extracts the first indexed column value from an index cell  
-func (p *IndexBTreeParser) ExtractSearchKey(cell *BTreeCell) BTreeKey {
+// ExtractSearchKey extracts the first indexed column value from an index cell
+func (p *IndexBTreeParser) ExtractSearchKey(cell *Cell) BTreeKey {
 	if len(cell.Record.RecordBody.Values) > 0 {
 		value := cell.Record.RecordBody.Values[0]
 		if bytes, ok := value.([]byte); ok {
@@ -191,12 +192,12 @@ func (p *IndexBTreeParser) ExtractSearchKey(cell *BTreeCell) BTreeKey {
 }
 
 // MatchesSearchKey checks if an index cell matches the search key
-func (p *IndexBTreeParser) MatchesSearchKey(cell *BTreeCell, searchKey BTreeKey) bool {
+func (p *IndexBTreeParser) MatchesSearchKey(cell *Cell, searchKey BTreeKey) bool {
 	cellKey := p.ExtractSearchKey(cell)
 	if cellKey == nil {
 		return false
 	}
-	
+
 	// Convert both to strings for comparison
 	var cellStr string
 	if bytes, ok := cellKey.([]byte); ok {
@@ -204,16 +205,16 @@ func (p *IndexBTreeParser) MatchesSearchKey(cell *BTreeCell, searchKey BTreeKey)
 	} else {
 		cellStr = fmt.Sprintf("%v", cellKey)
 	}
-	
+
 	var searchStr string
 	if bytes, ok := searchKey.([]byte); ok {
 		searchStr = string(bytes)
 	} else {
 		searchStr = fmt.Sprintf("%v", searchKey)
 	}
-	
-	// fmt.Printf("DEBUG: MatchesSearchKey - cellKey: %T '%s' vs searchKey: %T '%s' = %v\n", 
+
+	// fmt.Printf("DEBUG: MatchesSearchKey - cellKey: %T '%s' vs searchKey: %T '%s' = %v\n",
 	// 	cellKey, cellStr, searchKey, searchStr, cellStr == searchStr)
-	
+
 	return cellStr == searchStr
 }

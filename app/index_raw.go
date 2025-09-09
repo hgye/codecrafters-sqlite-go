@@ -33,17 +33,11 @@ func NewIndexRaw(dbRaw DatabaseRaw, name string, rootPage int, schema *SchemaRec
 func (ir *IndexRawImpl) ReadAllCells(ctx context.Context) ([]Cell, error) {
 	// Use B-tree abstraction for traversal
 	btree := NewBTree(ir.dbRaw, ir.rootPage, BTreeTypeIndex)
-	btreeCells, err := btree.TraverseAll(ctx)
+	cells, err := btree.TraverseAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("traverse index %s B-tree: %w", ir.name, err)
 	}
-	
-	// Convert BTreeCell to Cell
-	cells := make([]Cell, len(btreeCells))
-	for i, btreeCell := range btreeCells {
-		cells[i] = BTreeCellToCell(btreeCell)
-	}
-	
+
 	return cells, nil
 }
 
@@ -61,25 +55,25 @@ func (ir *IndexRawImpl) GetName() string {
 func (ir *IndexRawImpl) SearchKeys(ctx context.Context, key interface{}) ([]IndexEntry, error) {
 	// Use B-tree search to find matching entries
 	btree := NewBTree(ir.dbRaw, ir.rootPage, BTreeTypeIndex)
-	btreeCells, err := btree.Search(ctx, key)
+	cells, err := btree.Search(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("search index %s for key %v: %w", ir.name, key, err)
 	}
-	
-	// Convert BTreeCells to IndexEntries
+
+	// Convert Cells to IndexEntries
 	var entries []IndexEntry
 	errorHandler := NewErrorHandler(ErrorStrategySkip, nil)
-	
-	for _, btreeCell := range btreeCells {
-		entry, err := ir.btreeCellToIndexEntry(&btreeCell)
-		if handledErr := errorHandler.HandleProcessingError(err, "convert btree cell to index entry"); handledErr != nil {
+
+	for _, cell := range cells {
+		entry, err := ir.cellToIndexEntry(cell)
+		if handledErr := errorHandler.HandleProcessingError(err, "convert cell to index entry"); handledErr != nil {
 			return nil, handledErr
 		}
 		if err == nil {
 			entries = append(entries, *entry)
 		}
 	}
-	
+
 	return entries, nil
 }
 
@@ -88,14 +82,7 @@ func (ir *IndexRawImpl) GetIndexedColumns() []string {
 	return ir.indexedColumns
 }
 
-// btreeCellToIndexEntry converts a BTreeCell to an index entry
-func (ir *IndexRawImpl) btreeCellToIndexEntry(cell *BTreeCell) (*IndexEntry, error) {
-	// Convert BTreeCell to regular Cell for compatibility
-	regularCell := BTreeCellToCell(*cell)
-	return ir.cellToIndexEntry(regularCell)
-}
-
-// cellToIndexEntry converts a SQLite cell to an index entry
+// cellToIndexEntry converts a Cell to an index entry
 func (ir *IndexRawImpl) cellToIndexEntry(cell Cell) (*IndexEntry, error) {
 	// Index entries are stored differently than table rows
 	// For simplicity, we'll assume the first values are the indexed columns
@@ -141,7 +128,6 @@ func (ir *IndexRawImpl) matchesKey(value Value, key interface{}) bool {
 
 	return valueStr == keyStr
 }
-
 
 // parseIndexColumns extracts the indexed columns from CREATE INDEX SQL
 func parseIndexColumns(sql string) []string {

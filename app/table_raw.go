@@ -25,17 +25,11 @@ func NewTableRaw(dbRaw DatabaseRaw, name string, rootPage int) *TableRawImpl {
 func (tr *TableRawImpl) ReadAllCells(ctx context.Context) ([]Cell, error) {
 	// Use B-tree abstraction for traversal
 	btree := NewBTree(tr.dbRaw, tr.rootPage, BTreeTypeTable)
-	btreeCells, err := btree.TraverseAll(ctx)
+	cells, err := btree.TraverseAll(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("traverse table %s B-tree: %w", tr.name, err)
 	}
-	
-	// Convert BTreeCell to Cell
-	cells := make([]Cell, len(btreeCells))
-	for i, btreeCell := range btreeCells {
-		cells[i] = BTreeCellToCell(btreeCell)
-	}
-	
+
 	return cells, nil
 }
 
@@ -53,17 +47,16 @@ func (tr *TableRawImpl) GetName() string {
 func (tr *TableRawImpl) ReadCellByRowid(ctx context.Context, targetRowid int64) (*Cell, error) {
 	// Use B-tree search to find the specific rowid
 	btree := NewBTree(tr.dbRaw, tr.rootPage, BTreeTypeTable)
-	btreeCells, err := btree.Search(ctx, uint64(targetRowid))
+	cells, err := btree.Search(ctx, uint64(targetRowid))
 	if err != nil {
 		return nil, fmt.Errorf("search for rowid %d: %w", targetRowid, err)
 	}
-	
-	if len(btreeCells) == 0 {
+
+	if len(cells) == 0 {
 		return nil, fmt.Errorf("rowid %d not found in table %s", targetRowid, tr.name)
 	}
-	
-	// Convert first matching BTreeCell to Cell
-	btreeCell := btreeCells[0]
-	cell := BTreeCellToCell(btreeCell)
+
+	// Return first matching cell
+	cell := cells[0]
 	return &cell, nil
 }

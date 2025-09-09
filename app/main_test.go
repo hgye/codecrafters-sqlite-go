@@ -28,7 +28,7 @@ func TestMainFunctionality(t *testing.T) {
 		{
 			name:     "tables command",
 			args:     []string{"test", dbPath, ".tables"},
-			contains: []string{"sqlite_master"},
+			contains: []string{"sqlite_sequence"},
 		},
 		{
 			name:     "sql select count(*)",

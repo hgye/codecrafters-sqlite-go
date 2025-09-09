@@ -23,26 +23,16 @@ type BTreeComparator func(key1, key2 BTreeKey) int
 // BTreeCellParser defines how to parse cells for different B-tree types
 type BTreeCellParser interface {
 	// ParseLeafCell parses a leaf cell and returns the key and value
-	ParseLeafCell(pageData []byte, offset int) (*BTreeCell, error)
+	ParseLeafCell(pageData []byte, offset int) (*Cell, error)
 
 	// ParseInteriorCell parses an interior cell and returns child page and key
 	ParseInteriorCell(pageData []byte, offset int) (childPage uint32, key BTreeKey, err error)
 
 	// ExtractSearchKey extracts the key used for searching from a cell
-	ExtractSearchKey(cell *BTreeCell) BTreeKey
+	ExtractSearchKey(cell *Cell) BTreeKey
 
 	// MatchesSearchKey checks if a cell matches the search criteria
-	MatchesSearchKey(cell *BTreeCell, searchKey BTreeKey) bool
-}
-
-// BTreeCell represents a generic B-tree cell
-type BTreeCell struct {
-	// Common fields
-	Rowid  uint64
-	Record Record
-
-	// For index cells, the keys are in the record
-	// For table cells, the rowid is the key
+	MatchesSearchKey(cell *Cell, searchKey BTreeKey) bool
 }
 
 // BTree provides generic B-tree traversal functionality
@@ -76,12 +66,12 @@ func NewBTree(dbRaw DatabaseRaw, rootPage int, btreeType BTreeType) *BTree {
 }
 
 // TraverseAll traverses the entire B-tree and returns all cells
-func (bt *BTree) TraverseAll(ctx context.Context) ([]BTreeCell, error) {
+func (bt *BTree) TraverseAll(ctx context.Context) ([]Cell, error) {
 	return bt.traversePage(ctx, bt.rootPage)
 }
 
 // Search performs a B-tree search for the given key
-func (bt *BTree) Search(ctx context.Context, searchKey BTreeKey) ([]BTreeCell, error) {
+func (bt *BTree) Search(ctx context.Context, searchKey BTreeKey) ([]Cell, error) {
 	// Use proper B-tree navigation for both table and index B-trees
 	// No fallback to TraverseAll() - for manual debugging
 	// fmt.Printf("DEBUG: Starting search from root page %d (0x%x)\n", bt.rootPage, bt.rootPage)
@@ -89,7 +79,7 @@ func (bt *BTree) Search(ctx context.Context, searchKey BTreeKey) ([]BTreeCell, e
 }
 
 // SearchRange performs a range search in the B-tree
-func (bt *BTree) SearchRange(ctx context.Context, startKey, endKey BTreeKey) ([]BTreeCell, error) {
+func (bt *BTree) SearchRange(ctx context.Context, startKey, endKey BTreeKey) ([]Cell, error) {
 	// For now, just traverse all and filter
 	// This could be optimized to use B-tree properties
 	allCells, err := bt.TraverseAll(ctx)
@@ -97,7 +87,7 @@ func (bt *BTree) SearchRange(ctx context.Context, startKey, endKey BTreeKey) ([]
 		return nil, err
 	}
 
-	var results []BTreeCell
+	var results []Cell
 	for _, cell := range allCells {
 		key := bt.parser.ExtractSearchKey(&cell)
 		if bt.comparator(key, startKey) >= 0 && bt.comparator(key, endKey) <= 0 {
@@ -108,7 +98,7 @@ func (bt *BTree) SearchRange(ctx context.Context, startKey, endKey BTreeKey) ([]
 }
 
 // traversePage recursively traverses a B-tree page
-func (bt *BTree) traversePage(ctx context.Context, pageNum int) ([]BTreeCell, error) {
+func (bt *BTree) traversePage(ctx context.Context, pageNum int) ([]Cell, error) {
 	pageData, err := bt.dbRaw.ReadPage(ctx, pageNum)
 	if err != nil {
 		return nil, fmt.Errorf("read page %d: %w", pageNum, err)
@@ -127,7 +117,7 @@ func (bt *BTree) traversePage(ctx context.Context, pageNum int) ([]BTreeCell, er
 }
 
 // searchPage performs B-tree search on a page
-func (bt *BTree) searchPage(ctx context.Context, pageNum int, searchKey BTreeKey) ([]BTreeCell, error) {
+func (bt *BTree) searchPage(ctx context.Context, pageNum int, searchKey BTreeKey) ([]Cell, error) {
 	// fmt.Printf("DEBUG: Searching page %d for key '%v'\n", pageNum, searchKey)
 	pageData, err := bt.dbRaw.ReadPage(ctx, pageNum)
 	if err != nil {
@@ -136,14 +126,14 @@ func (bt *BTree) searchPage(ctx context.Context, pageNum int, searchKey BTreeKey
 
 	// Show first 16 bytes of page for debugging
 	// fmt.Printf("DEBUG: Page %d first 16 bytes: %x\n", pageNum, pageData[:16])
-	
+
 	pageHeader, err := bt.parsePageHeader(pageData)
 	if err != nil {
 		return nil, fmt.Errorf("parse page header: %w", err)
 	}
 
 	// fmt.Printf("DEBUG: Page %d (0x%x) has type 0x%02x, isLeaf=%v\n", pageNum, pageNum, pageHeader.PageType, bt.isLeafPage(pageHeader))
-	
+
 	if bt.isLeafPage(pageHeader) {
 		// fmt.Printf("DEBUG: Page %d is LEAF page with %d cells\n", pageNum, pageHeader.CellCount)
 		return bt.searchLeafPage(ctx, pageHeader, pageData, searchKey)
@@ -169,8 +159,8 @@ func (bt *BTree) isLeafPage(header *PageHeader) bool {
 }
 
 // readLeafCells reads all cells from a leaf page
-func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData []byte) ([]BTreeCell, error) {
-	var cells []BTreeCell
+func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData []byte) ([]Cell, error) {
+	var cells []Cell
 	cellPointerOffset := bt.getCellPointerOffset(header)
 	errorHandler := NewErrorHandler(ErrorStrategySkip, nil)
 
@@ -194,8 +184,8 @@ func (bt *BTree) readLeafCells(ctx context.Context, header *PageHeader, pageData
 }
 
 // searchLeafPage searches for matching cells in a leaf page
-func (bt *BTree) searchLeafPage(ctx context.Context, header *PageHeader, pageData []byte, searchKey BTreeKey) ([]BTreeCell, error) {
-	var results []BTreeCell
+func (bt *BTree) searchLeafPage(ctx context.Context, header *PageHeader, pageData []byte, searchKey BTreeKey) ([]Cell, error) {
+	var results []Cell
 	cellPointerOffset := bt.getCellPointerOffset(header)
 	errorHandler := NewErrorHandler(ErrorStrategySkip, nil)
 
@@ -219,8 +209,8 @@ func (bt *BTree) searchLeafPage(ctx context.Context, header *PageHeader, pageDat
 }
 
 // traverseInteriorPage traverses all children of an interior page
-func (bt *BTree) traverseInteriorPage(ctx context.Context, header *PageHeader, pageData []byte) ([]BTreeCell, error) {
-	var allCells []BTreeCell
+func (bt *BTree) traverseInteriorPage(ctx context.Context, header *PageHeader, pageData []byte) ([]Cell, error) {
+	var allCells []Cell
 
 	// Read rightmost child pointer
 	rightmostChild := bt.getRightmostChild(pageData)
@@ -337,7 +327,7 @@ func compareIndexKeys(key1, key2 BTreeKey) int {
 	} else {
 		str1 = fmt.Sprintf("%v", key1)
 	}
-	
+
 	var str2 string
 	if bytes, ok := key2.([]byte); ok {
 		str2 = string(bytes)
